@@ -1,0 +1,7 @@
+if(ESP_PLATFORM)
+    idf_component_register(INCLUDE_DIRS include)
+else()
+    add_library(padel_common INTERFACE)
+    target_include_directories(padel_common INTERFACE include)
+    target_compile_features(padel_common INTERFACE cxx_std_17)
+endif()
