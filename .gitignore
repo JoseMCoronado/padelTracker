@@ -2,3 +2,9 @@ build/
 .DS_Store
 .cache/
 compile_commands.json
+
+# Development radio keys (docs/PAIRING.md); never commit real keys.
+firmware/keys/dev_keys.h
+
+# Simulator runtime data
+court-sim-data/

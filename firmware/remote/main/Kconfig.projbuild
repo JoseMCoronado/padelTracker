@@ -1,0 +1,26 @@
+menu "Padel Remote"
+
+config PADEL_REMOTE_WIFI_CHANNEL
+    int "Wi-Fi channel"
+    range 1 13
+    default 1
+    help
+        ESP-NOW channel. Must match the court until channel handover via
+        PAIR_ASSIGN is exercised on hardware.
+
+config PADEL_REMOTE_BUTTON_GPIO
+    int "Point button GPIO"
+    default 3
+    help
+        Active-low button input with internal pull-up. Default GPIO3 = pad
+        D1 on the XIAO ESP32-C3. Verify against docs/HARDWARE_PINOUT.md on
+        bring-up day.
+
+config PADEL_REMOTE_LED_GPIO
+    int "Feedback LED GPIO"
+    default 10
+    help
+        External feedback LED (the XIAO ESP32-C3 has no user LED on board).
+        Default GPIO10 = pad D10. Active high.
+
+endmenu

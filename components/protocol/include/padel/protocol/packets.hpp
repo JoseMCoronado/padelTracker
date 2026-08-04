@@ -16,6 +16,8 @@ inline constexpr std::uint8_t kMagic1 = 'S';
 enum class MessageType : std::uint8_t {
     PointIntent = 0x01,
     Ack = 0x02,
+    PairRequest = 0x03,
+    PairAssign = 0x04,
 };
 
 enum class Action : std::uint8_t {
@@ -79,15 +81,41 @@ struct AckPacket {
     std::uint8_t team_b_display_code = 0;
 };
 
+// Broadcast by a remote in pairing mode (spec 10.8 / 14.5). The court shows
+// the short device id (low 16 bits of remote_id, hex) for organizer
+// confirmation.
+struct PairRequestPacket {
+    std::uint32_t remote_id = 0;
+    std::uint32_t boot_id = 0;
+    std::uint8_t fw_version = 0;
+    std::uint16_t battery_mv = 0;
+};
+
+// Sent by the court after the organizer confirms a pairing candidate.
+struct PairAssignPacket {
+    CourtId court_id = 0;
+    std::uint32_t remote_id = 0;  // target remote
+    TeamId team{TeamId::A};
+    std::uint8_t channel = 0;     // Wi-Fi channel the court operates on
+};
+
 inline constexpr std::size_t kPointIntentSize = 31;
 inline constexpr std::size_t kAckSize = 31;
+inline constexpr std::size_t kPairRequestSize = 17;
+inline constexpr std::size_t kPairAssignSize = 14;
 
 std::array<std::uint8_t, kPointIntentSize> serialize(const PointIntentPacket& packet);
 std::array<std::uint8_t, kAckSize> serialize(const AckPacket& packet);
+std::array<std::uint8_t, kPairRequestSize> serialize(const PairRequestPacket& packet);
+std::array<std::uint8_t, kPairAssignSize> serialize(const PairAssignPacket& packet);
 
 Result<PointIntentPacket, ProtocolError> parse_point_intent(const std::uint8_t* data,
                                                             std::size_t length);
 Result<AckPacket, ProtocolError> parse_ack(const std::uint8_t* data, std::size_t length);
+Result<PairRequestPacket, ProtocolError> parse_pair_request(const std::uint8_t* data,
+                                                            std::size_t length);
+Result<PairAssignPacket, ProtocolError> parse_pair_assign(const std::uint8_t* data,
+                                                          std::size_t length);
 
 // Cheap classification for routing before full parse (safe on any length).
 Result<MessageType, ProtocolError> peek_message_type(const std::uint8_t* data,

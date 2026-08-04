@@ -1,0 +1,34 @@
+menu "Padel Court"
+
+config PADEL_COURT_ID
+    int "Court id"
+    range 1 255
+    default 1
+
+config PADEL_COURT_WIFI_CHANNEL
+    int "Wi-Fi channel"
+    range 1 13
+    default 1
+    help
+        ESP-NOW channel. Remotes must be configured to the same channel.
+
+config PADEL_COURT_BUZZER_GPIO
+    int "Buzzer GPIO"
+    default 6
+    help
+        Active buzzer, driven high to beep (spec section 15). GPIO6 is the
+        free sensor-port pin on the 7B. Verify against
+        docs/HARDWARE_PINOUT.md on bring-up day.
+
+config PADEL_COURT_BUTTON_A_GPIO
+    int "Wired backup button GPIO (Team A)"
+    default 16
+    help
+        Arcade button, active low with internal pull-up. GPIO16/15 are the
+        RS485 pins on the 7B, repurposed as inputs when RS485 is unused.
+
+config PADEL_COURT_BUTTON_B_GPIO
+    int "Wired backup button GPIO (Team B)"
+    default 15
+
+endmenu

@@ -1,6 +1,7 @@
 #include "padel/domain/match_engine.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <unordered_set>
 
 namespace padel::domain {
@@ -69,68 +70,83 @@ std::optional<PointAwarded> MatchEngine::next_undo_target() const {
     return std::get<PointAwarded>(it->payload);
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const StartMatch& cmd) {
-    if (state_.lifecycle != MatchLifecycle::NotStarted) {
-        return CommandResult::err(CommandError::MatchAlreadyStarted);
-    }
-    return CommandResult::ok(append(MatchStarted{cmd.initial_serving_team}));
+DecidedEvent MatchEngine::make_decided(Event payload) const {
+    return DecidedEvent{next_event_id_, events_.size() + 1, std::move(payload)};
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const AwardPoint& cmd) {
+MatchEngine::DecideResult MatchEngine::decide(const StartMatch& cmd) const {
+    if (state_.lifecycle != MatchLifecycle::NotStarted) {
+        return DecideResult::err(CommandError::MatchAlreadyStarted);
+    }
+    return DecideResult::ok(make_decided(MatchStarted{cmd.initial_serving_team}));
+}
+
+MatchEngine::DecideResult MatchEngine::decide(const AwardPoint& cmd) const {
     switch (state_.lifecycle) {
         case MatchLifecycle::Active:
             break;
         case MatchLifecycle::NotStarted:
-            return CommandResult::err(CommandError::MatchNotStarted);
+            return DecideResult::err(CommandError::MatchNotStarted);
         case MatchLifecycle::Paused:
-            return CommandResult::err(CommandError::MatchPausedError);
+            return DecideResult::err(CommandError::MatchPausedError);
         case MatchLifecycle::Completed:
-            return CommandResult::err(CommandError::MatchCompleted);
+            return DecideResult::err(CommandError::MatchCompleted);
     }
-    return CommandResult::ok(append(PointAwarded{cmd.team, cmd.source}));
+    return DecideResult::ok(make_decided(PointAwarded{cmd.team, cmd.source}));
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const UndoLastScoringAction&) {
+MatchEngine::DecideResult MatchEngine::decide(const UndoLastScoringAction&) const {
     const std::optional<EventId> target = find_undo_target();
     if (!target) {
-        return CommandResult::err(CommandError::NothingToUndo);
+        return DecideResult::err(CommandError::NothingToUndo);
     }
-    const EventId id = next_event_id_++;
-    events_.push_back(StoredEvent{id, ScoringActionUndone{*target}});
-    rebuild();
-    return CommandResult::ok(id);
+    return DecideResult::ok(make_decided(ScoringActionUndone{*target}));
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const SetServingTeam& cmd) {
+MatchEngine::DecideResult MatchEngine::decide(const SetServingTeam& cmd) const {
     if (state_.lifecycle == MatchLifecycle::Completed) {
-        return CommandResult::err(CommandError::MatchCompleted);
+        return DecideResult::err(CommandError::MatchCompleted);
     }
-    return CommandResult::ok(append(ServingTeamChanged{cmd.team}));
+    return DecideResult::ok(make_decided(ServingTeamChanged{cmd.team}));
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const PauseMatch&) {
+MatchEngine::DecideResult MatchEngine::decide(const PauseMatch&) const {
     if (state_.lifecycle != MatchLifecycle::Active) {
-        return CommandResult::err(CommandError::MatchNotActive);
+        return DecideResult::err(CommandError::MatchNotActive);
     }
-    return CommandResult::ok(append(MatchPaused{}));
+    return DecideResult::ok(make_decided(MatchPaused{}));
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const ResumeMatch&) {
+MatchEngine::DecideResult MatchEngine::decide(const ResumeMatch&) const {
     if (state_.lifecycle != MatchLifecycle::Paused) {
-        return CommandResult::err(CommandError::MatchNotActive);
+        return DecideResult::err(CommandError::MatchNotActive);
     }
-    return CommandResult::ok(append(MatchResumed{}));
+    return DecideResult::ok(make_decided(MatchResumed{}));
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const FinishMatchManually& cmd) {
+MatchEngine::DecideResult MatchEngine::decide(const FinishMatchManually& cmd) const {
     if (state_.lifecycle != MatchLifecycle::Active && state_.lifecycle != MatchLifecycle::Paused) {
-        return CommandResult::err(CommandError::MatchNotActive);
+        return DecideResult::err(CommandError::MatchNotActive);
     }
-    return CommandResult::ok(append(MatchFinishedManually{cmd.declared_winner}));
+    return DecideResult::ok(make_decided(MatchFinishedManually{cmd.declared_winner}));
 }
 
-MatchEngine::CommandResult MatchEngine::handle(const ResetMatch&) {
-    return CommandResult::ok(append(MatchReset{}));
+MatchEngine::DecideResult MatchEngine::decide(const ResetMatch&) const {
+    return DecideResult::ok(make_decided(MatchReset{}));
+}
+
+EventId MatchEngine::commit(const DecidedEvent& decided) {
+    // A stale DecidedEvent (another command committed in between) is a
+    // programming error in the single-threaded application task.
+    assert(decided.id == next_event_id_);
+
+    if (std::holds_alternative<ScoringActionUndone>(decided.payload)) {
+        next_event_id_++;
+        events_.push_back(StoredEvent{decided.id, decided.payload});
+        rebuild();
+        return decided.id;
+    }
+    return append(decided.payload);
 }
 
 MatchEngine MatchEngine::replay(std::vector<StoredEvent> events, MatchConfig fallback_config) {

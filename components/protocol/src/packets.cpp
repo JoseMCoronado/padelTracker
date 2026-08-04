@@ -202,6 +202,67 @@ Result<AckPacket, ProtocolError> parse_ack(const std::uint8_t* data, std::size_t
     return R::ok(packet);
 }
 
+std::array<std::uint8_t, kPairRequestSize> serialize(const PairRequestPacket& packet) {
+    std::array<std::uint8_t, kPairRequestSize> buffer{};
+    Writer writer(buffer.data());
+    write_header(writer, MessageType::PairRequest);
+    writer.u32(packet.remote_id);
+    writer.u32(packet.boot_id);
+    writer.u8(packet.fw_version);
+    writer.u16(packet.battery_mv);
+    append_crc(buffer.data(), writer.position());
+    return buffer;
+}
+
+std::array<std::uint8_t, kPairAssignSize> serialize(const PairAssignPacket& packet) {
+    std::array<std::uint8_t, kPairAssignSize> buffer{};
+    Writer writer(buffer.data());
+    write_header(writer, MessageType::PairAssign);
+    writer.u16(packet.court_id);
+    writer.u32(packet.remote_id);
+    writer.u8(static_cast<std::uint8_t>(packet.team));
+    writer.u8(packet.channel);
+    append_crc(buffer.data(), writer.position());
+    return buffer;
+}
+
+Result<PairRequestPacket, ProtocolError> parse_pair_request(const std::uint8_t* data,
+                                                            std::size_t length) {
+    using R = Result<PairRequestPacket, ProtocolError>;
+    const auto frame = validate_frame(data, length, MessageType::PairRequest, kPairRequestSize);
+    if (!frame) {
+        return R::err(frame.error());
+    }
+    Reader reader(data, 4);
+    PairRequestPacket packet{};
+    packet.remote_id = reader.u32();
+    packet.boot_id = reader.u32();
+    packet.fw_version = reader.u8();
+    packet.battery_mv = reader.u16();
+    return R::ok(packet);
+}
+
+Result<PairAssignPacket, ProtocolError> parse_pair_assign(const std::uint8_t* data,
+                                                          std::size_t length) {
+    using R = Result<PairAssignPacket, ProtocolError>;
+    const auto frame = validate_frame(data, length, MessageType::PairAssign, kPairAssignSize);
+    if (!frame) {
+        return R::err(frame.error());
+    }
+    Reader reader(data, 4);
+    PairAssignPacket packet{};
+    packet.court_id = reader.u16();
+    packet.remote_id = reader.u32();
+    const std::uint8_t team = reader.u8();
+    if (team != static_cast<std::uint8_t>(TeamId::A) &&
+        team != static_cast<std::uint8_t>(TeamId::B)) {
+        return R::err(ProtocolError::InvalidTeam);
+    }
+    packet.team = static_cast<TeamId>(team);
+    packet.channel = reader.u8();
+    return R::ok(packet);
+}
+
 Result<MessageType, ProtocolError> peek_message_type(const std::uint8_t* data,
                                                      std::size_t length) {
     using R = Result<MessageType, ProtocolError>;
@@ -219,6 +280,10 @@ Result<MessageType, ProtocolError> peek_message_type(const std::uint8_t* data,
             return R::ok(MessageType::PointIntent);
         case static_cast<std::uint8_t>(MessageType::Ack):
             return R::ok(MessageType::Ack);
+        case static_cast<std::uint8_t>(MessageType::PairRequest):
+            return R::ok(MessageType::PairRequest);
+        case static_cast<std::uint8_t>(MessageType::PairAssign):
+            return R::ok(MessageType::PairAssign);
         default:
             return R::err(ProtocolError::InvalidMessageType);
     }

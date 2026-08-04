@@ -14,19 +14,29 @@ Current progress is tracked in [STATUS.md](STATUS.md); architecture decisions in
 
 ```text
 components/
-  common/     Typed identifiers, Result type — shared by everything
-  domain/     Pure scoring engine: config, state, events, reducer, projection
-  protocol/   Radio packet serialization, CRC16, intent deduplication
+  common/       Typed identifiers, Result type, structured log ring
+  domain/       Pure scoring engine: config, state, events, reducer, projection
+  protocol/     Radio packet serialization, CRC16, dedup, pairing packets
+  application/  CourtService intent pipeline, conflict guard, PairingService
+  persistence/  Durable CRC-framed event journal + crash recovery
+  remote_core/  Portable remote state machine: debounce, retries, feedback
+  ui/           LVGL screens + view models (runs natively and on device)
 simulator/
-  scorer-cli/ Interactive terminal scoreboard (no hardware needed)
-tests/        Native unit tests (Catch2)
-tools/        Build and test scripts
-docs/         Scoring rules, radio protocol, toolchain notes
+  scorer-cli/   Interactive terminal scoreboard (no hardware needed)
+  court-sim/    SDL desktop court: real UI + service + journal + RemoteCore
+firmware/
+  espnow-linktest/  ESP-NOW link proof for the DevKits (see its README)
+  remote/           XIAO ESP32-C3 remote (esp32c3)
+  court-display/    Waveshare 7B court unit (esp32s3)
+tests/          Native unit tests (Catch2), incl. power-loss + lossy-radio sims
+tools/          Build and test scripts
+docs/           Scoring rules, protocol, pairing, pinout, bring-up runbooks
 ```
 
 `components/` has zero ESP-IDF/LVGL dependencies and compiles natively on the
-development machine. Firmware projects (court display, wearable remote) will be
-added under `firmware/` at board bring-up and reuse the same components.
+development machine; each component's CMakeLists also registers as an ESP-IDF
+component for firmware builds. Firmware projects live under `firmware/` and
+consume the same components via `EXTRA_COMPONENT_DIRS`.
 
 ## Build and test (native, no hardware)
 
@@ -49,6 +59,32 @@ cmake -S . -B build/native && cmake --build build/native -j
 Commands: `a` / `b` award a point, `undo`, `state`, `new <preset>`, `reset`,
 `presets`, `help`, `quit`. Presets: `standard`, `golden`, `club`,
 `tiebreak-final`.
+
+## Court simulator (full UI, no hardware)
+
+```bash
+./build/native/simulator/court-sim/court-sim          # interactive
+./build/native/simulator/court-sim/court-sim --tour   # screenshot every screen
+```
+
+The real 1024x600 LVGL UI in an SDL window, driven by the real
+`CourtService`, journal, and `RemoteCore` remotes. Keys: `a`/`b` remote
+press, `Shift+a`/`b` wired button, `l` packet loss, `p` pairing mode, `r`
+power-cycle (journal recovery), `q` quit.
+
+## Firmware builds
+
+```bash
+source ~/esp/esp-idf/export.sh
+cd firmware/court-display && idf.py set-target esp32s3 && idf.py build
+cd ../remote            && idf.py set-target esp32c3 && idf.py build
+```
+
+Per-app details: [firmware/court-display/README.md](firmware/court-display/README.md),
+[firmware/remote/README.md](firmware/remote/README.md), and the DevKit link
+soak in [firmware/espnow-linktest/README.md](firmware/espnow-linktest/README.md).
+Pin assignments: [docs/HARDWARE_PINOUT.md](docs/HARDWARE_PINOUT.md); pairing:
+[docs/PAIRING.md](docs/PAIRING.md).
 
 ## Hardware (prototype)
 

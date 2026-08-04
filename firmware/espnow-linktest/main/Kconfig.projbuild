@@ -1,0 +1,49 @@
+menu "ESP-NOW linktest configuration"
+
+    choice LINKTEST_ROLE
+        prompt "Role"
+        default LINKTEST_ROLE_SENDER
+        help
+            Sender plays the remote (builds POINT_INTENT packets, retries
+            until a terminal ACK). Receiver plays the court (parse, dedup,
+            reply ACK, count applied points).
+
+        config LINKTEST_ROLE_SENDER
+            bool "Sender (plays remote)"
+        config LINKTEST_ROLE_RECEIVER
+            bool "Receiver (plays court)"
+    endchoice
+
+    config LINKTEST_WIFI_CHANNEL
+        int "Wi-Fi channel"
+        range 1 13
+        default 6
+
+    config LINKTEST_COURT_ID
+        int "Court id carried in packets"
+        range 0 65535
+        default 1
+
+    config LINKTEST_REMOTE_ID
+        int "Remote id (sender)"
+        default 161
+
+    config LINKTEST_TEAM
+        int "Team the sender presses for (1 = A, 2 = B)"
+        range 1 2
+        default 1
+
+    config LINKTEST_BURST_COUNT
+        int "Scripted burst press count (sender)"
+        default 500
+
+    config LINKTEST_BURST_GAP_MS
+        int "Gap between scripted presses in ms (sender)"
+        default 40
+
+    config LINKTEST_ACK_DROP_PCT
+        int "Percent of ACKs deliberately dropped (receiver, forces retries)"
+        range 0 90
+        default 20
+
+endmenu

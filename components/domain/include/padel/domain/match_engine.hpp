@@ -12,24 +12,54 @@
 
 namespace padel::domain {
 
+// A validated command outcome that has not been applied yet. Carries the
+// identity the event will get on commit, so a durable journal record can be
+// written *before* the state changes (spec section 13.3: Accepted is only
+// ACKed after the event is durable). Commit must follow decide with no other
+// command in between.
+struct DecidedEvent {
+    EventId id{};
+    std::uint64_t revision_after{};
+    Event payload{};
+};
+
 // Owns the event journal and authoritative state for one match. Commands are
 // validated against current state; accepted commands append exactly one event.
 // In firmware, a single application task owns this object (spec section 23.3)
 // and the journal is mirrored to durable storage (M3).
+//
+// Two usage styles:
+//   - handle(cmd): validate + apply in one step (CLI simulator, tests).
+//   - decide(cmd) -> persist durably -> commit(decided): two-phase path used
+//     by the application service so a storage failure leaves state untouched.
 class MatchEngine {
 public:
     explicit MatchEngine(MatchConfig config, MatchId match_id = 1);
 
     using CommandResult = Result<EventId, CommandError>;
+    using DecideResult = Result<DecidedEvent, CommandError>;
 
-    CommandResult handle(const StartMatch& cmd);
-    CommandResult handle(const AwardPoint& cmd);
-    CommandResult handle(const UndoLastScoringAction& cmd);
-    CommandResult handle(const SetServingTeam& cmd);
-    CommandResult handle(const PauseMatch& cmd);
-    CommandResult handle(const ResumeMatch& cmd);
-    CommandResult handle(const FinishMatchManually& cmd);
-    CommandResult handle(const ResetMatch& cmd);
+    DecideResult decide(const StartMatch& cmd) const;
+    DecideResult decide(const AwardPoint& cmd) const;
+    DecideResult decide(const UndoLastScoringAction& cmd) const;
+    DecideResult decide(const SetServingTeam& cmd) const;
+    DecideResult decide(const PauseMatch& cmd) const;
+    DecideResult decide(const ResumeMatch& cmd) const;
+    DecideResult decide(const FinishMatchManually& cmd) const;
+    DecideResult decide(const ResetMatch& cmd) const;
+
+    // Applies a decided event. Must be the most recent decide() outcome; the
+    // engine asserts the event id is still the next id.
+    EventId commit(const DecidedEvent& decided);
+
+    template <typename Command>
+    CommandResult handle(const Command& cmd) {
+        const DecideResult decided = decide(cmd);
+        if (!decided) {
+            return CommandResult::err(decided.error());
+        }
+        return CommandResult::ok(commit(decided.value()));
+    }
 
     const MatchState& state() const { return state_; }
     const std::vector<StoredEvent>& journal() const { return events_; }
@@ -47,6 +77,7 @@ private:
     EventId append(Event event);
     void rebuild();
     std::optional<EventId> find_undo_target() const;
+    DecidedEvent make_decided(Event payload) const;
 
     std::vector<StoredEvent> events_{};
     MatchState state_{};
