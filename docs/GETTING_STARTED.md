@@ -135,14 +135,23 @@ Record the numbers in [HARDWARE_PINOUT.md](HARDWARE_PINOUT.md).
 
 ## Step 5 — Wire the extras to the court unit (separate session)
 
-With the board **unpowered**: buzzer between **GPIO6** and GND (mind
-polarity), arcade button Team A between **GPIO13** and GND, Team B between
-**GPIO15** and GND. No resistors — internal pull-ups handle it. Not GPIO16:
-that pin is driven by the board's RS485 transceiver output, see
-[HARDWARE_PINOUT.md](HARDWARE_PINOUT.md). Power up; the
-Diagnostics screen has a test beep and shows each wired button's live state
-and press count, so you can prove the wiring without scoring a point. Then
-press them for real — each one scores for its team.
+With the board **unpowered**: buzzer on the 3-pin **sensor header**
+(3V3 / GPIO6 / GND — mind polarity, and add a 10 kΩ pulldown from GPIO6 to GND
+so resets don't squawk), arcade button Team A between **GPIO13** and GND, Team
+B between **GPIO15** and GND. No resistors on the buttons — internal pull-ups
+handle it. Not GPIO16: that pin is driven by the board's RS485 transceiver
+output, see [HARDWARE_PINOUT.md](HARDWARE_PINOUT.md), which also covers the
+transistor version of the buzzer for when direct drive is too quiet.
+
+Use the **passive** buzzer: the firmware makes the tone itself and gives each
+event its own pitch. For an active one, set `PADEL_COURT_BUZZER_PASSIVE=n`.
+
+Power up; the Diagnostics screen shows each wired button's live state and press
+count, so you can prove the wiring without scoring a point. BEEP TEST there
+plays a 1-5 kHz stepped sweep: it proves the buzzer works, and the step that
+rings loudest is the element's resonance — if it is nowhere near the cue tones
+in `components/sound/src/tones.cpp`, move them. Then press the buttons for
+real — each one scores for its team, with the rising two-note point cue.
 
 ## Step 6 — Spare DevKit as the missing remote
 
@@ -169,7 +178,8 @@ double-tap inside 700 ms scores once, and two remotes pressed together raise
 the conflict prompt.
 
 Holding the button 1.5 s takes the last point back again (ADR-0014), whichever
-team scored it, which the court confirms with a long 500 ms beep. Two things to
+team scored it, which the court confirms with the long descending run — clearly
+not the short rising chirp a point makes (ADR-0018). Two things to
 try: hold after the *other* team scored — that point should come off too — and
 hold for ten seconds straight, which must still only remove one point.
 

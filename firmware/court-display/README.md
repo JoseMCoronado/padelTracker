@@ -2,7 +2,7 @@
 
 The same `CourtService` + journal + LVGL UI that runs in the desktop
 simulator, wired to the 7B's RGB panel, GT911 touch, ESP-NOW radio,
-LittleFS journal storage, NVS settings, buzzer and wired backup buttons.
+LittleFS journal storage, NVS settings, tone buzzer and wired backup buttons.
 
 ## Build & flash
 
@@ -45,11 +45,21 @@ Kconfig GPIO defaults for buzzer/buttons.
 |---|---|---|
 | Court id | 1 | |
 | Wi-Fi channel | 1 | must match the remotes |
-| Buzzer GPIO | 6 | sensor-port pin, active high |
+| Buzzer GPIO | 6 | sensor-header pin, the board's only free GPIO |
+| Buzzer is passive | y | LEDC tones; `n` drives an active buzzer with levels |
 | Wired button A / B GPIO | 13 / 15 | active low; TF card MISO and RS485 TX, both unused |
 
 Not GPIO16 for a button: it is RS485_RXD, driven by the onboard SP3485's
 output. See `docs/HARDWARE_PINOUT.md`.
+
+## Sound
+
+`main/buzzer.cpp` is the only code that touches the sounder; what it plays
+comes from `components/sound`, which is portable and native-tested, so
+court-sim prints the same cues at the same moments. Cues are told apart by
+pitch shape rather than length (ADR-0018): a point rises, a remote undo falls,
+pairing climbs three notes, a finished match plays a fanfare, and BEEP TEST on
+the diagnostics screen sweeps 1-5 kHz to locate the element's resonance.
 
 ## Storage
 

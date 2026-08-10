@@ -27,6 +27,11 @@ add_executable(common_tests
 target_link_libraries(common_tests PRIVATE padel_common Catch2::Catch2WithMain)
 catch_discover_tests(common_tests)
 
+add_executable(sound_tests
+    sound/test_tones.cpp)
+target_link_libraries(sound_tests PRIVATE padel_sound Catch2::Catch2WithMain)
+catch_discover_tests(sound_tests)
+
 add_executable(protocol_tests
     protocol/test_crc16.cpp
     protocol/test_packets.cpp

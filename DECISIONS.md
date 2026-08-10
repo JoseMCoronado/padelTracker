@@ -500,3 +500,57 @@ the domain can produce and it fits, which the render test pins. The
 summary is one more tap in every club round; it is also the only place
 the round is reviewable, and it is where an undo lands when it reopens a
 finished match.
+
+## ADR-0018: The court unit speaks in pitches, from a shared cue table
+
+Status: Accepted
+
+Context: The buzzer was an active sounder on a plain GPIO, held high for a
+fixed time, so the four things the court unit says differed only in length:
+80 ms for an accepted point, 150 ms for pairing, 400 ms for a completed
+match, 500 ms for a remote undo. Length is the one dimension a listener
+cannot use. From the far side of a court, through glass and over the noise
+of a club night, 80 ms and 150 ms of the same note are the same sound, and
+the undo cue — the one event that happens with nobody near the unit, where
+being noticed is the entire point — was distinguishable only by being
+slightly longer than a score. The sounds also lived as bare `beep(ms)`
+calls in `main.cpp`, which the spec's "feedback patterns MUST be
+centralized in one module" rules out, and which left court-sim with a stub
+that logged "BEEP" and proved nothing.
+
+Decision: Drive a **passive** element with LEDC and give every cue its own
+pitch shape. A point rises two notes, a remote undo falls two low ones,
+pairing climbs three, a finished match plays a short fanfare. The patterns
+are data in a portable `components/sound`, so the firmware, the simulator
+and the native tests all read the same table; `main/buzzer.cpp` is the only
+code that touches the pin. `PADEL_COURT_BUZZER_PASSIVE=n` keeps an active
+buzzer working by playing the same patterns as rhythm with the pitch
+dropped, which is the fallback if the passive element cannot be made loud
+enough in a hall.
+
+Every tone sits between 1 and 5 kHz, and the diagnostics test became a
+stepped sweep of that band rather than a single beep. Both follow from the
+same physical fact: a piezo is loud only near its mechanical resonance and
+falls off steeply either side, so the band is where a sounder can carry at
+all, and the sweep is how bring-up finds the resonance by ear.
+
+The first cut put the undo an octave below a point, on the theory that low
+and falling reads as "taken away". Hardware disagreed: on the element we
+fitted, the sweep peaked near the top of the band, and 1047 Hz was audibly
+feeble where 4186 Hz carried. Both remote-triggered cues therefore sit at
+the top of the band, and the undo separates itself by shape instead — a
+three-step descending run against a two-step rise, five times as long.
+Pitch is what makes a cue audible here; contour and length are what make it
+identifiable.
+
+Consequences: Cues got longer — a point is 125 ms against the old 80, a
+completed match 710 against 400 — which is affordable because rallies are
+seconds apart, and a native test pins the point cue under 200 ms so
+back-to-back points cannot swallow each other. Tone choice is now a design
+surface that can be got wrong, so the tests assert the properties that
+matter rather than the numbers: no two cues share a pitch sequence, a point
+rises, an undo falls, and the undo has more steps and runs at least three
+times longer. This does not make the unit capable of music. A piezo's volume
+varies wildly with pitch, so melodies come out uneven and thin; real audio
+would mean an I2S DAC, an amplifier and a speaker, and the 7B has no pins
+left for it.

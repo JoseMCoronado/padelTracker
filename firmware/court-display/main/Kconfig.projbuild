@@ -16,9 +16,20 @@ config PADEL_COURT_BUZZER_GPIO
     int "Buzzer GPIO"
     default 6
     help
-        Active buzzer, driven high to beep (spec section 15). GPIO6 is the
-        free sensor-port pin on the 7B. Verify against
+        Sounder pin (spec section 15). GPIO6 is the free sensor-header pin on
+        the 7B — the only one the RGB panel leaves alone. Verify against
         docs/HARDWARE_PINOUT.md on bring-up day.
+
+config PADEL_COURT_BUZZER_PASSIVE
+    bool "Buzzer is passive (driven with LEDC tones)"
+    default y
+    help
+        A passive element has no oscillator of its own, so the firmware
+        supplies the frequency and each cue gets its own pitch shape
+        (ADR-0018). Turn this off for an active buzzer, which sounds at its
+        own fixed pitch when the pin is driven high: the cues then differ only
+        by rhythm, which is the fallback if the passive one is too quiet in
+        the hall.
 
 config PADEL_COURT_BUTTON_A_GPIO
     int "Wired backup button GPIO (Team A)"

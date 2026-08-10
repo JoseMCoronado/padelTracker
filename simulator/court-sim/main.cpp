@@ -36,6 +36,7 @@
 #include "padel/persistence/journal.hpp"
 #include "padel/persistence/stdio_file_backend.hpp"
 #include "padel/remote/remote_core.hpp"
+#include "padel/sound/tones.hpp"
 #include "padel/ui/court_ui.hpp"
 #include "padel/ui/model_builder.hpp"
 #include "sdl_backend.hpp"
@@ -167,6 +168,7 @@ struct App {
     std::uint8_t prev_points_a = 0;
     std::uint8_t prev_points_b = 0;
     domain::MatchLifecycle prev_lifecycle = domain::MatchLifecycle::NotStarted;
+    std::uint32_t acked_remote_undos = 0;
     std::vector<std::string> log_lines;
 
     void log(const std::string& line) {
@@ -175,6 +177,22 @@ struct App {
         if (log_lines.size() > 12) {
             log_lines.erase(log_lines.begin());
         }
+    }
+
+    // The desktop has no buzzer, so a cue is printed with the notes the court
+    // unit would play. Same table, same call sites — the sound design can be
+    // reviewed here before hardware exists.
+    void play_cue(sound::Cue cue) {
+        const sound::Pattern pattern = sound::pattern_for(cue);
+        std::string notes;
+        for (std::size_t i = 0; i < pattern.count; ++i) {
+            const sound::Tone tone = pattern.tones[i];
+            notes += (i > 0 ? " " : "");
+            notes += (tone.freq_hz == 0 ? std::string("rest")
+                                        : std::to_string(tone.freq_hz) + "Hz");
+            notes += "/" + std::to_string(tone.duration_ms) + "ms";
+        }
+        log("buzzer: " + std::string(pattern.name) + " [" + notes + "]");
     }
 
     bool lost() { return loss_pct > 0 && static_cast<int>(rng() % 100) < loss_pct; }
@@ -484,6 +502,7 @@ struct App {
                 remote_a.core->on_pair_assign(*assign);
                 remote_b.core->on_pair_assign(*assign);
                 log("pairing confirmed, PAIR_ASSIGN sent");
+                play_cue(sound::Cue::PairingConfirmed);
             }
             model.screen = ui::Screen::Setup;
         };
@@ -499,7 +518,7 @@ struct App {
                 log("recovery: match discarded (journal archived)");
             }
         };
-        cb.test_beep = [this]() { log("BEEP (buzzer test)"); };
+        cb.test_beep = [this]() { play_cue(sound::Cue::SelfTest); };
 
         // --- Club round -----------------------------------------------------
         cb.create_player = [this](const std::string& name) {
@@ -667,14 +686,23 @@ struct App {
             pairing->tick();
         }
 
-        // ACK path back to the remotes (lossy).
+        // ACK path back to the remotes (lossy). The buzzer cue is not lossy:
+        // it happens on the court unit, whether or not the ACK arrives.
         for (const protocol::AckPacket& ack : service->drain_acks()) {
+            if (ack.status == protocol::AckStatus::Accepted) {
+                play_cue(sound::Cue::PointScored);
+            }
             if (lost()) {
                 continue;
             }
             remote_a.core->on_ack(ack);
             remote_b.core->on_ack(ack);
         }
+        const std::uint32_t undos = service->counters().remote_undos;
+        if (undos > acked_remote_undos) {
+            play_cue(sound::Cue::RemoteUndo);
+        }
+        acked_remote_undos = undos;  // a rebuilt service restarts at zero
 
         // Point flash: detect committed points regardless of input path.
         const auto& state = service->state();
@@ -704,6 +732,7 @@ struct App {
                 club->on_set_complete(state);
             }
             model.screen = ui::Screen::MatchSummary;
+            play_cue(sound::Cue::MatchComplete);
         } else if (prev_lifecycle == domain::MatchLifecycle::Completed &&
                    state.lifecycle != domain::MatchLifecycle::Completed &&
                    ui::is_post_match_screen(model.screen)) {

@@ -39,9 +39,9 @@ Next: reflash both units and replay the session
 - Remote hold-to-undo (ADR-0014): a 1.5 s hold on either remote takes back the
   match's last point via `Action::UndoLastPoint` on the POINT_INTENT frame,
   timed from the physical button edge. Award intents go out on button release
-  rather than press-down so a hold can still become an undo; the court beeps
-  500 ms so it is never mistaken for a score. A deliberate departure from
-  spec 11.2/14.6 — see the ADR
+  rather than press-down so a hold can still become an undo; the court answers
+  with a long descending cue so it is never mistaken for a score. A deliberate
+  departure from spec 11.2/14.6 — see the ADR
 - Full LVGL v8.4.0 UI — `components/ui` (ADR-0010): setup, live match,
   match summary, match complete, undo preview, protected reset, pairing,
   diagnostics, recovery; view models projected from CourtService; headless
@@ -75,9 +75,11 @@ Next: reflash both units and replay the session
   affected the esp32c3 build identically
 - `firmware/court-display` (Waveshare 7B): board profile (unverified pins/
   timings isolated in `board_7b.cpp`), radio-callback -> queue -> app task ->
-  LVGL task split (ADR-0012), LittleFS journal + NVS settings, buzzer +
-  arcade buttons on GPIO13/15 (live level + press count on the diagnostics
-  screen), watchdog — builds clean for esp32s3. Team A moved off GPIO16:
+  LVGL task split (ADR-0012), LittleFS journal + NVS settings, LEDC tone
+  buzzer on the sensor-header GPIO6 (per-cue pitch shapes from the portable
+  `components/sound`, ADR-0018) + arcade buttons on GPIO13/15 (live level +
+  press count on the diagnostics screen), watchdog — builds clean for
+  esp32s3. Team A moved off GPIO16:
   that pin is RS485_RXD, driven by the onboard SP3485 output, so a switch
   there fights a push-pull driver (`docs/HARDWARE_PINOUT.md`)
 - `firmware/button-test` (DevKitC-1): arcade button/lamp bench harness —
@@ -88,8 +90,8 @@ Next: reflash both units and replay the session
   (button GPIO4 / lamp GPIO16 = button 1 of the bench harness), so a DevKit
   plus one arcade button is a stand-in clicker; the tracked c3 sdkconfig is
   untouched
-- 214 native tests passing (domain, protocol, application, persistence,
-  integration, remote, ui, common)
+- 223 native tests passing (domain, protocol, application, persistence,
+  integration, remote, ui, common, sound)
 - ESP-IDF v5.4.4; all three firmware projects build
 
 # From the first court session (2026-08-10)

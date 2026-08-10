@@ -60,7 +60,7 @@ firmware also wants a short pause (~2 ms) between I2C transactions.
 
 | Peripheral | Default GPIO | Rationale |
 |---|---|---|
-| Buzzer (active, high = on) | 6 | free sensor-port pin |
+| Buzzer (passive, LEDC square wave) | 6 | free sensor-header pin |
 | Arcade button Team A (active low, pull-up) | 13 | TF card MISO; no card is used |
 | Arcade button Team B (active low, pull-up) | 15 | RS485 TX pin, RS485 unused |
 
@@ -76,6 +76,37 @@ the journal lives on internal-flash LittleFS), GPIO19/20 (USB D-/D+, only if
 native USB is not needed; also CAN). Almost everything else is consumed by the
 panel.
 
+### Buzzer
+
+GPIO6 is the only fully free GPIO on the board, and it is brought out on the
+**sensor header** — a 3-pin HY2.0 connector carrying 3V3 / GPIO6 / GND, with a
+HY2.0-to-Dupont cable in the box, so nothing needs soldering. Check the pin
+order against the silkscreen before connecting.
+
+The firmware drives a **passive** sounder: it generates the frequency itself
+with LEDC so each cue gets its own pitch (ADR-0018). An active buzzer has its
+own oscillator and would ignore the pitch, so it needs
+`PADEL_COURT_BUZZER_PASSIVE=n`, which falls back to level-only drive where the
+cues differ by rhythm alone.
+
+- **Direct drive** works only for a low-current 3.3 V piezo, roughly 3-10 mA:
+  `+` to GPIO6, `-` to the header's GND. Check the datasheet current first; the
+  S3 pin is rated 40 mA absolute maximum and should not run near it.
+- **Transistor drive** is what a hall needs. A loud electromagnetic sounder
+  pulls 25-40 mA at 5 V, so use the same low-side switch as the arcade lamps:
+  5 V (from the 5 V output header) to buzzer `+`, buzzer `-` to a
+  2N7000/AO3400 drain or a BC337 collector through 1 kΩ, source/emitter to GND,
+  gate/base to GPIO6. Add a 1N4148 across a coil-type sounder, cathode to +5 V.
+- **Fit a 10 kΩ pulldown** from GPIO6 to GND either way (gate-to-GND for the
+  transistor version). The pin floats from power-on until `buzzer::init()`
+  runs, so without it every reset and reflash squawks.
+
+Piezo elements are loud only near their mechanical resonance, typically around
+4 kHz, and fall off steeply either side, which is why the cue tones all sit in
+the 1-5 kHz band. The diagnostics BEEP TEST plays a stepped sweep across that
+band for exactly this reason: whichever step rings loudest is the resonance,
+and the cue pitches in `components/sound` should sit near it.
+
 ## Arcade buttons (5x 30 mm illuminated)
 
 Switch and lamp are separate circuits inside the button.
@@ -88,7 +119,7 @@ Switch and lamp are separate circuits inside the button.
   drive a 5V lamp directly. Roughly 20 mA per lamp, resistor built in.
 
 The court unit firmware drives no lamps today: it has two switch inputs
-(GPIO16/15) and the buzzer, nothing else. On a remote the lamp doubles as the
+(GPIO13/15) and the buzzer, nothing else. On a remote the lamp doubles as the
 feedback LED via `PADEL_REMOTE_LED_GPIO`.
 
 ### Bench harness on an ESP32-S3-DevKitC-1

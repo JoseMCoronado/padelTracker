@@ -60,6 +60,7 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 add_subdirectory(components/common)
+add_subdirectory(components/sound)
 add_subdirectory(components/domain)
 add_subdirectory(components/protocol)
 add_subdirectory(components/application)

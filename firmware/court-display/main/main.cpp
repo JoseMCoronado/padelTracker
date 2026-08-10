@@ -36,6 +36,7 @@
 #include "nvs_flash.h"
 
 #include "board_7b.hpp"
+#include "buzzer.hpp"
 #include "lvgl.h"
 #include "padel/application/club_controller.hpp"
 #include "padel/application/court_service.hpp"
@@ -59,7 +60,6 @@ const char* TAG = "court";
 constexpr CourtId kCourtId = CONFIG_PADEL_COURT_ID;
 constexpr std::uint32_t kConflictWindowMs = 250;
 constexpr uint8_t kBroadcastMac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-constexpr gpio_num_t kBuzzerGpio = static_cast<gpio_num_t>(CONFIG_PADEL_COURT_BUZZER_GPIO);
 constexpr gpio_num_t kButtonAGpio = static_cast<gpio_num_t>(CONFIG_PADEL_COURT_BUTTON_A_GPIO);
 constexpr gpio_num_t kButtonBGpio = static_cast<gpio_num_t>(CONFIG_PADEL_COURT_BUTTON_B_GPIO);
 
@@ -128,41 +128,14 @@ void init_radio() {
     ensure_peer(kBroadcastMac);
 }
 
-// --- Buzzer + wired buttons (spec 15) ---------------------------------------
-
-esp_timer_handle_t s_buzzer_off_timer = nullptr;
-
-void buzzer_off_cb(void* /*arg*/) {
-    gpio_set_level(kBuzzerGpio, 0);
-}
-
-void beep(uint32_t duration_ms) {
-    gpio_set_level(kBuzzerGpio, 1);
-    esp_timer_stop(s_buzzer_off_timer);
-    esp_timer_start_once(s_buzzer_off_timer, static_cast<uint64_t>(duration_ms) * 1000);
-}
+// --- Wired buttons (spec 15) ------------------------------------------------
 
 void init_gpio() {
-    gpio_config_t out{};
-    out.pin_bit_mask = 1ULL << kBuzzerGpio;
-    out.mode = GPIO_MODE_OUTPUT;
-    ESP_ERROR_CHECK(gpio_config(&out));
-    gpio_set_level(kBuzzerGpio, 0);
-
     gpio_config_t in{};
     in.pin_bit_mask = (1ULL << kButtonAGpio) | (1ULL << kButtonBGpio);
     in.mode = GPIO_MODE_INPUT;
     in.pull_up_en = GPIO_PULLUP_ENABLE;
     ESP_ERROR_CHECK(gpio_config(&in));
-
-    const esp_timer_create_args_t off_args = {
-        .callback = buzzer_off_cb,
-        .arg = nullptr,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "buzz_off",
-        .skip_unhandled_events = true,
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&off_args, &s_buzzer_off_timer));
 }
 
 // Press debounce for the arcade buttons; one event per press. Matches
@@ -491,17 +464,17 @@ struct CourtApp {
             const uint8_t* target = it != remote_macs.end() ? it->second.data() : kBroadcastMac;
             esp_now_send(target, bytes.data(), bytes.size());
             if (ack.status == protocol::AckStatus::Accepted) {
-                beep(80);
+                buzzer::play(sound::Cue::PointScored);
             }
         }
-        // A remote hold reverses a point with nobody touching the court, so
-        // it gets its own long beep instead of sounding like a score. The
-        // later beep() restarts the off timer, replacing the 80 ms one.
+        // A remote hold reverses a point with nobody touching the court, so it
+        // gets the falling cue instead of sounding like a score. Playing it
+        // here replaces the point cue that the same batch may have started.
         const std::uint32_t undos = service->counters().remote_undos;
         const bool grew = undos > acked_remote_undos;
         acked_remote_undos = undos;  // a rebuilt service restarts at zero
         if (grew) {
-            beep(500);
+            buzzer::play(sound::Cue::RemoteUndo);
         }
     }
 
@@ -565,7 +538,7 @@ struct CourtApp {
                 if (const auto assign = pairing->confirm()) {
                     const auto bytes = protocol::serialize(*assign);
                     esp_now_send(kBroadcastMac, bytes.data(), bytes.size());
-                    beep(150);
+                    buzzer::play(sound::Cue::PairingConfirmed);
                 }
                 model.screen = ui::Screen::Setup;
                 break;
@@ -580,7 +553,7 @@ struct CourtApp {
                 }
                 break;
             case Type::TestBeep:
-                beep(200);
+                buzzer::play(sound::Cue::SelfTest);
                 break;
             case Type::CreatePlayer:
                 roster->add_player(command.player_name);
@@ -652,6 +625,8 @@ struct CourtApp {
         rows.push_back({"Board profile", "Waveshare 7B 1024x600 (UNVERIFIED)"});
         rows.push_back({"Court id", std::to_string(kCourtId)});
         rows.push_back({"Radio channel", std::to_string(CONFIG_PADEL_COURT_WIFI_CHANNEL)});
+        rows.push_back({"Buzzer (GPIO" + std::to_string(CONFIG_PADEL_COURT_BUZZER_GPIO) + ")",
+                        buzzer::kind()});
         rows.push_back({wired_button_label('A', CONFIG_PADEL_COURT_BUTTON_A_GPIO),
                         wired_button_value(button_a)});
         rows.push_back({wired_button_label('B', CONFIG_PADEL_COURT_BUTTON_B_GPIO),
@@ -713,7 +688,7 @@ struct CourtApp {
                 club->on_set_complete(state);
             }
             model.screen = ui::Screen::MatchSummary;
-            beep(400);
+            buzzer::play(sound::Cue::MatchComplete);
         } else if (prev_lifecycle == domain::MatchLifecycle::Completed &&
                    state.lifecycle != domain::MatchLifecycle::Completed &&
                    ui::is_post_match_screen(model.screen)) {
@@ -918,6 +893,7 @@ extern "C" void app_main(void) {
 
     init_radio();
     init_gpio();
+    buzzer::init();
 
     static CourtApp app;
 
