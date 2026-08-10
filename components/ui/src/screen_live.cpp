@@ -7,6 +7,9 @@
 namespace padel::ui::internal {
 namespace {
 
+// Wide enough for "RESET MATCH" plus its icon on one line at heading size.
+constexpr lv_coord_t kMenuCardWidth = 460;
+
 LiveScreen* self(lv_event_t* e) { return static_cast<LiveScreen*>(lv_event_get_user_data(e)); }
 
 void on_award_a(lv_event_t* e);
@@ -299,32 +302,79 @@ void LiveScreen::create(Shared* shared_state) {
                               on_menu, this);
 
     // --- Organizer overlay (hidden) ----------------------------------------
+    // Floating so opening the menu never reflows the score panels behind it,
+    // and full-screen so the dimmed backdrop swallows the taps that would
+    // otherwise land on a team panel and score a point. Tapping the backdrop
+    // dismisses the menu.
     organizer_overlay = lv_obj_create(root);
-    lv_obj_set_size(organizer_overlay, 420, LV_SIZE_CONTENT);
-    lv_obj_center(organizer_overlay);
-    lv_obj_set_style_bg_color(organizer_overlay, tokens::surface_raised(), 0);
-    lv_obj_set_style_radius(organizer_overlay, tokens::kRadius, 0);
-    lv_obj_set_flex_flow(organizer_overlay, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(organizer_overlay, tokens::kSpaceL, 0);
-    lv_obj_set_style_pad_row(organizer_overlay, tokens::kSpaceS, 0);
+    lv_obj_add_flag(organizer_overlay, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_size(organizer_overlay, tokens::kScreenWidth, tokens::kScreenHeight);
+    lv_obj_align(organizer_overlay, LV_ALIGN_TOP_LEFT, -tokens::kSpaceM, -tokens::kSpaceM);
+    lv_obj_set_style_bg_color(organizer_overlay, tokens::bg(), 0);
+    lv_obj_set_style_bg_opa(organizer_overlay, LV_OPA_70, 0);
+    lv_obj_set_style_radius(organizer_overlay, 0, 0);
+    lv_obj_set_style_border_width(organizer_overlay, 0, 0);
+    lv_obj_set_style_pad_all(organizer_overlay, 0, 0);
+    lv_obj_add_flag(organizer_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(organizer_overlay, on_menu_close, LV_EVENT_CLICKED, this);
     lv_obj_add_flag(organizer_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(organizer_overlay, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t* title = make_label(organizer_overlay, tokens::font_heading(), tokens::text());
-    lv_label_set_text(title, "ORGANIZER");
+    lv_obj_t* card = lv_obj_create(organizer_overlay);
+    lv_obj_set_size(card, kMenuCardWidth, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    // Clickable so a miss between rows is absorbed instead of reaching the
+    // backdrop's dismiss handler.
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(card, tokens::surface(), 0);
+    lv_obj_set_style_radius(card, tokens::kRadius, 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_color(card, tokens::surface_raised(), 0);
+    lv_obj_set_style_shadow_width(card, 48, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_50, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_black(), 0);
+    lv_obj_set_style_pad_all(card, tokens::kSpaceL, 0);
+    lv_obj_set_style_pad_row(card, tokens::kSpaceS, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-    const auto full_width_button = [&](const char* text, lv_event_cb_t handler) {
-        lv_obj_t* b = make_button(organizer_overlay, text, tokens::kOrganizerTarget, handler, this);
+    lv_obj_t* title = make_label(card, tokens::font_body(), tokens::text_muted());
+    lv_label_set_text(title, "ORGANIZER");
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_set_style_pad_bottom(title, tokens::kSpaceXs, 0);
+
+    // Menu rows read as a list: icon and text left-aligned on a common margin
+    // rather than centered per row.
+    const auto menu_row = [&](const char* text, lv_event_cb_t handler, lv_color_t color) {
+        lv_obj_t* b = make_button(card, text, tokens::kOrganizerTarget, handler, this);
         lv_obj_set_width(b, LV_PCT(100));
+        lv_obj_t* label = lv_obj_get_child(b, 0);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_text_color(label, color, 0);
         return b;
     };
     // +1 buttons removed: tapping a team's score panel awards the point.
-    full_width_button(LV_SYMBOL_LEFT " UNDO", on_undo);
-    lv_obj_t* pause_button = full_width_button("PAUSE", on_pause);
+    menu_row(LV_SYMBOL_LEFT " UNDO", on_undo, tokens::text());
+    lv_obj_t* pause_button = menu_row("PAUSE", on_pause, tokens::text());
     pause_button_label = lv_obj_get_child(pause_button, 0);
-    full_width_button(LV_SYMBOL_TRASH " RESET MATCH", on_reset);
-    full_width_button(LV_SYMBOL_LIST " DIAGNOSTICS", on_diagnostics);
-    full_width_button("CLOSE", on_menu_close);
+    menu_row(LV_SYMBOL_LIST " DIAGNOSTICS", on_diagnostics, tokens::text());
+    menu_row(LV_SYMBOL_TRASH " RESET MATCH", on_reset, tokens::error());
+
+    // Rule detaches the dismiss row from the actions above it.
+    lv_obj_t* divider = lv_obj_create(card);
+    lv_obj_set_size(divider, LV_PCT(100), 2);
+    lv_obj_set_style_bg_color(divider, tokens::text_muted(), 0);
+    lv_obj_set_style_bg_opa(divider, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(divider, 0, 0);
+    lv_obj_set_style_radius(divider, 0, 0);
+    lv_obj_set_style_pad_all(divider, 0, 0);
+    lv_obj_clear_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* close_button = menu_row("CLOSE", on_menu_close, tokens::text_muted());
+    lv_obj_set_style_bg_opa(close_button, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(close_button, 2, 0);
+    lv_obj_set_style_border_color(close_button, tokens::surface_raised(), 0);
+    lv_obj_align(lv_obj_get_child(close_button, 0), LV_ALIGN_CENTER, 0, 0);
 }
 
 void LiveScreen::open_organizer_menu() {

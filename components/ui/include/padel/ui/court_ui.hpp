@@ -60,10 +60,11 @@ public:
     void create(UiCallbacks callbacks);
     void render(const UiModel& model);
 
-    // Test/tour hooks: drive setup-screen state that is otherwise only
-    // reachable through touch (the MODE dropdown and the picker modal).
+    // Test/tour hooks: drive state that is otherwise only reachable through
+    // touch (the MODE dropdown, the picker modal, the organizer menu).
     void debug_select_preset(int preset_index);
     void debug_open_club_picker(TeamId team);
+    void debug_open_organizer_menu(bool open);
     MatchSettings debug_read_settings() const;
 
     // Setup-screen edits live inside LVGL widgets; the host reads them back

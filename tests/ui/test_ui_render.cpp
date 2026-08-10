@@ -102,6 +102,17 @@ void require_labels_in_bounds() {
     }
 }
 
+lv_obj_t* find_label(const char* text) {
+    std::vector<lv_obj_t*> labels;
+    collect_labels(lv_scr_act(), labels);
+    for (lv_obj_t* label : labels) {
+        if (std::string(lv_label_get_text(label)) == text) {
+            return label;
+        }
+    }
+    return nullptr;
+}
+
 // The screen actually painted something beyond the background color.
 void require_screen_painted() {
     std::size_t non_bg = 0;
@@ -277,17 +288,6 @@ TEST_CASE("tapping a roster tile selects the player despite continuous re-render
     court_ui().debug_open_club_picker(TeamId::A);
     settle();
 
-    const auto find_label = [](const char* text) -> lv_obj_t* {
-        std::vector<lv_obj_t*> labels;
-        collect_labels(lv_scr_act(), labels);
-        for (lv_obj_t* label : labels) {
-            if (std::string(lv_label_get_text(label)) == text) {
-                return label;
-            }
-        }
-        return nullptr;
-    };
-
     lv_obj_t* lewis_label = find_label("LEWIS");
     REQUIRE(lewis_label != nullptr);
     lv_area_t coords;
@@ -342,16 +342,6 @@ TEST_CASE("picked players replace an unchanged generic team name at start") {
     court_ui().debug_open_club_picker(TeamId::A);
     settle();
 
-    const auto find_label = [](const char* text) -> lv_obj_t* {
-        std::vector<lv_obj_t*> labels;
-        collect_labels(lv_scr_act(), labels);
-        for (lv_obj_t* label : labels) {
-            if (std::string(lv_label_get_text(label)) == text) {
-                return label;
-            }
-        }
-        return nullptr;
-    };
     const auto tap = [&](const char* text) {
         lv_obj_t* label = find_label(text);
         REQUIRE(label != nullptr);
@@ -393,6 +383,44 @@ TEST_CASE("picked players replace an unchanged generic team name at start") {
     tap("LUIGI");
     tap(LV_SYMBOL_OK " DONE");
     CHECK(court_ui().debug_read_settings().team_a_name == "TEAM A");
+}
+
+TEST_CASE("organizer menu floats over the live screen without reflowing it") {
+    ui::UiModel m = stress_model(ui::Screen::Live);
+    court_ui().render(m);
+    settle();
+
+    lv_obj_t* score = find_label("AD");
+    REQUIRE(score != nullptr);
+    lv_area_t before;
+    lv_obj_get_coords(score, &before);
+
+    court_ui().debug_open_organizer_menu(true);
+    court_ui().render(m);
+    settle();
+
+    // The menu is a floating modal: the score behind it must not move or
+    // shrink to make room for it.
+    lv_area_t after;
+    lv_obj_get_coords(score, &after);
+    CHECK(after.x1 == before.x1);
+    CHECK(after.y1 == before.y1);
+    CHECK(after.y2 == before.y2);
+
+    require_labels_in_bounds();
+    for (const char* row : {"ORGANIZER", "PAUSE", LV_SYMBOL_TRASH " RESET MATCH", "CLOSE"}) {
+        lv_obj_t* label = find_label(row);
+        INFO("menu row: " << row);
+        REQUIRE(label != nullptr);
+        lv_area_t coords;
+        lv_obj_get_coords(label, &coords);
+        CHECK(coords.y1 >= 0);
+        CHECK(coords.y2 < kHeight);
+    }
+
+    court_ui().debug_open_organizer_menu(false);
+    settle();
+    CHECK(find_label("CLOSE") == nullptr);
 }
 
 TEST_CASE("special scoring states render distinct label text") {

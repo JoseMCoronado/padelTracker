@@ -937,6 +937,14 @@ int run_tour(App& app, const std::string& out_dir) {
     app.court_ui.render(m);
     if (!settle_and_shoot("13-match-summary")) return 1;
 
+    // Switching screens dismisses the menu, so land on live first.
+    m.screen = ui::Screen::Live;
+    app.court_ui.render(m);
+    app.court_ui.debug_open_organizer_menu(true);
+    app.court_ui.render(m);
+    if (!settle_and_shoot("14-live-organizer")) return 1;
+    app.court_ui.debug_open_organizer_menu(false);
+
     return 0;
 }
 

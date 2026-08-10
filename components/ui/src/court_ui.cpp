@@ -43,6 +43,15 @@ void CourtUi::debug_open_club_picker(TeamId team) {
     }
 }
 
+void CourtUi::debug_open_organizer_menu(bool open) {
+    if (!screens_->created) return;
+    if (open) {
+        screens_->live.open_organizer_menu();
+    } else {
+        screens_->live.close_organizer_menu();
+    }
+}
+
 MatchSettings CourtUi::debug_read_settings() const {
     return screens_->created ? screens_->setup.read_settings() : MatchSettings{};
 }
