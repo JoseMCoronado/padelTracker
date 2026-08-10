@@ -11,18 +11,34 @@ bool on_team(const std::array<std::uint8_t, 2>& team, std::uint8_t slot) {
 
 }  // namespace
 
-ClubRound::ClubRound(std::uint32_t coin_seed) : coin_seed_(coin_seed) {}
+ClubRound::ClubRound(std::uint32_t coin_seed, ClubForbiddenPairs forbidden)
+    : coin_seed_(coin_seed), forbidden_(forbidden) {}
 
 ClubPairing ClubRound::current_pairing() const {
     if (stage_ == ClubStage::Set1) {
         return kSet1Pairing;
     }
-    // Mix: the Set 1 winners split up and each takes a loser. Preserve the
-    // sheet's convention (first winner pairs with the first loser).
+    // Mix: the Set 1 winners split up and each takes a loser. Preferred is the
+    // sheet's convention (first winner pairs with the first loser); the
+    // swapped split is the only alternative, and it is what keeps a barred
+    // pair - a Top 2 from the previous round - off the same side.
     const SetRecord& set1 = sets_[0];
     const auto& winners = set1.winner == TeamId::A ? set1.pairing.team_a : set1.pairing.team_b;
     const auto& losers = set1.winner == TeamId::A ? set1.pairing.team_b : set1.pairing.team_a;
-    return ClubPairing{{winners[0], losers[0]}, {winners[1], losers[1]}};
+
+    const ClubPairing preferred{{winners[0], losers[0]}, {winners[1], losers[1]}};
+    if (!forbidden_.bars(preferred.team_a[0], preferred.team_a[1]) &&
+        !forbidden_.bars(preferred.team_b[0], preferred.team_b[1])) {
+        return preferred;
+    }
+    const ClubPairing swapped{{winners[0], losers[1]}, {winners[1], losers[0]}};
+    if (!forbidden_.bars(swapped.team_a[0], swapped.team_a[1]) &&
+        !forbidden_.bars(swapped.team_b[0], swapped.team_b[1])) {
+        return swapped;
+    }
+    // Both splits are barred, which means the set 1 picks were illegal in the
+    // first place. Fall back rather than deadlock the round.
+    return preferred;
 }
 
 void ClubRound::record_set_result(TeamId winner, std::uint8_t winner_games,
@@ -38,6 +54,25 @@ void ClubRound::record_set_result(TeamId winner, std::uint8_t winner_games,
         stage_ = ClubStage::Complete;
         finalize();
     }
+}
+
+bool ClubRound::undo_last_set_result() {
+    if (stage_ == ClubStage::Set1) {
+        return false;
+    }
+    if (stage_ == ClubStage::Complete) {
+        sets_[1] = SetRecord{};
+        stage_ = ClubStage::Set2;
+        ranked_ = {};
+        wins_ = {};
+        diff_ = {};
+        coin_flipped_ = false;
+        coin_winner_ = 0;
+        return true;
+    }
+    sets_[0] = SetRecord{};
+    stage_ = ClubStage::Set1;
+    return true;
 }
 
 void ClubRound::finalize() {

@@ -29,6 +29,76 @@ lv_obj_t* centered_column(lv_obj_t* parent) {
 
 }  // namespace
 
+// --- Match summary --------------------------------------------------------------
+
+void SummaryScreen::create(Shared* shared_state) {
+    shared = shared_state;
+    root = make_screen_root();
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(root, tokens::kSpaceM, 0);
+    lv_obj_set_flex_align(root, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    title_label = make_label(root, tokens::font_large(), tokens::text_muted());
+    winner_label = make_label(root, tokens::font_banner(), tokens::success());
+    lv_label_set_long_mode(winner_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(winner_label, LV_PCT(100));
+    lv_obj_set_style_text_align(winner_label, LV_TEXT_ALIGN_CENTER, 0);
+
+    scoreboard.create(root, 56, tokens::font_large(), tokens::font_large());
+
+    lv_obj_t* stats_panel = make_panel(root);
+    lv_obj_set_size(stats_panel, 640, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(stats_panel, tokens::kSpaceM, 0);
+    lv_obj_set_style_pad_row(stats_panel, tokens::kSpaceXs, 0);
+    lv_obj_set_flex_flow(stats_panel, LV_FLEX_FLOW_COLUMN);
+
+    for (StatRow& stat : stats) {
+        stat.panel = lv_obj_create(stats_panel);
+        lv_obj_set_size(stat.panel, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(stat.panel, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(stat.panel, 0, 0);
+        lv_obj_set_style_pad_all(stat.panel, 0, 0);
+        lv_obj_set_flex_flow(stat.panel, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(stat.panel, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(stat.panel, LV_OBJ_FLAG_SCROLLABLE);
+
+        stat.label = make_label(stat.panel, tokens::font_heading(), tokens::text_muted());
+        lv_label_set_long_mode(stat.label, LV_LABEL_LONG_DOT);
+        lv_obj_set_flex_grow(stat.label, 1);
+        stat.value = make_label(stat.panel, tokens::font_heading(), tokens::text());
+    }
+
+    lv_obj_t* button = make_button(
+        root, "CONTINUE", tokens::kOrganizerTarget,
+        [](lv_event_t* e) {
+            auto* s = self<SummaryScreen>(e);
+            if (s->shared->callbacks.summary_continue) s->shared->callbacks.summary_continue();
+        },
+        this);
+    lv_obj_set_style_bg_color(button, tokens::success(), 0);
+    continue_label = lv_obj_get_child(button, 0);
+}
+
+void SummaryScreen::update(const SummaryViewModel& model) {
+    set_text(title_label, model.title);
+    set_text(winner_label, model.winner_label);
+    set_text(continue_label, model.continue_label);
+    scoreboard.update(model.scoreboard);
+
+    for (std::size_t i = 0; i < kMaxStatRows; ++i) {
+        StatRow& stat = stats[i];
+        if (i >= model.stats.size()) {
+            lv_obj_add_flag(stat.panel, LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_clear_flag(stat.panel, LV_OBJ_FLAG_HIDDEN);
+        set_text(stat.label, model.stats[i].first);
+        set_text(stat.value, model.stats[i].second);
+    }
+}
+
 // --- Match complete ----------------------------------------------------------
 
 void CompleteScreen::create(Shared* shared_state) {

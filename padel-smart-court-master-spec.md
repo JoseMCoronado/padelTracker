@@ -1011,7 +1011,7 @@ stable_release_ms: 30
 local_retrigger_guard_ms: 700
 ```
 
-These are tunable configuration values and must be verified with the selected button.
+These are tunable configuration values and must be verified with the selected button. Verified on court: `stable_press_ms` is **150**, not 30 — see ADR-0016. A shirt brushing the button cleared 30 ms easily and scored phantom points.
 
 ## 11.3 Feedback contract
 
@@ -1326,6 +1326,8 @@ Conceptual layout:
 └─────────────────────────────────────────────────────────────┘
 ```
 
+Built differently, per ADR-0017: the games/sets line and the set-history text were unreadable from across a court, so the bottom band carries a broadcast-style board instead — one row per team, one cell per set, current set lit, serve shown as a dot on the name plate.
+
 On a point:
 
 - update the score once committed;
@@ -1408,6 +1410,8 @@ Show:
 - `New match`;
 - `Review / correct`;
 - future `Next assignments` panel.
+
+A match summary comes first (ADR-0017): the last point routes to a read-back screen — winner, the set board, duration, points won per side, longest run — whose single CONTINUE button leads here, or in a club round to the mix or the standings.
 
 Future example:
 

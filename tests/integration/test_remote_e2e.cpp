@@ -163,7 +163,8 @@ TEST_CASE("real remote logic vs real court over a lossy channel, exactly once") 
 
     const auto press = [&](remote::RemoteCore& remote) {
         remote.set_button_level(true);
-        for (int i = 0; i < 40; ++i) {
+        // Held past stable_press_ms (150) and well short of undo_hold_ms.
+        for (int i = 0; i < 250; ++i) {
             step_world();
         }
         remote.set_button_level(false);

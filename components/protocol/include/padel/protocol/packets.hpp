@@ -22,7 +22,7 @@ enum class MessageType : std::uint8_t {
 
 enum class Action : std::uint8_t {
     AwardPoint = 0x01,
-    // Take back the sending team's most recent point (ADR-0014). Shares the
+    // Take back the match's most recent point (ADR-0014). Shares the
     // POINT_INTENT frame so it inherits the sequence identity, deduplication
     // and retry machinery that make the award path exactly-once.
     UndoLastPoint = 0x02,

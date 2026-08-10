@@ -2,7 +2,7 @@
 //
 //   Set 1: mini-set first to 3 (Team A pair vs Team B pair)
 //   Set 2: mix within the court — the Set 1 winners split up, each takes
-//          a loser
+//          a loser, avoiding any pair that is barred from playing together
 //   Top 2 = the 2-win player + the 1-win player with the better game
 //          differential (a 3-0 win beats a 3-2 win); a tied differential is
 //          resolved by an automatic coin flip (announced, never a button)
@@ -38,23 +38,56 @@ struct ClubStanding {
     int differential = 0;  // +games won side, -games lost side, both sets
 };
 
+// Slot pairs that must never end up as teammates. A court can carry two of
+// them: the Top 2 that stayed here and the Top 2 that came up from the court
+// below, since the sheet bars both from partnering the following round.
+struct ClubForbiddenPairs {
+    static constexpr std::size_t kMax = 2;
+    std::array<std::array<std::uint8_t, 2>, kMax> pairs{};
+    std::uint8_t count = 0;
+
+    void add(std::uint8_t first, std::uint8_t second) {
+        if (count < kMax) {
+            pairs[count++] = {first, second};
+        }
+    }
+
+    bool bars(std::uint8_t first, std::uint8_t second) const {
+        for (std::uint8_t i = 0; i < count; ++i) {
+            if ((pairs[i][0] == first && pairs[i][1] == second) ||
+                (pairs[i][1] == first && pairs[i][0] == second)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 class ClubRound {
 public:
     // coin_seed feeds the automatic coin flip on a tied differential;
     // hosts pass a random word, tests pass a known one (flip = seed & 1).
-    explicit ClubRound(std::uint32_t coin_seed = 0);
+    // forbidden keeps those slot pairs apart in the set 2 mix.
+    explicit ClubRound(std::uint32_t coin_seed = 0, ClubForbiddenPairs forbidden = {});
 
     ClubStage stage() const { return stage_; }
 
     // Pairing for the set the round is currently waiting on.
-    // Set 1: {0,1} vs {2,3}. Set 2: winners split, each takes a loser
-    // (with this slot layout that is always {0,2} vs {1,3}).
+    // Set 1: {0,1} vs {2,3}. Set 2: the winners split up and each takes a
+    // loser. Two splits satisfy that; the one that would put a forbidden pair
+    // together is rejected, which is what stops a court's Top 2 from being
+    // handed back to each other by the mix.
     ClubPairing current_pairing() const;
 
     // Records the result of the current set (first to 3: winner_games is 3).
     // Ignored when the round is already complete.
     void record_set_result(TeamId winner, std::uint8_t winner_games,
                            std::uint8_t loser_games);
+
+    // Rewinds the most recently recorded set, so an undo on the court display
+    // can walk a finished mini-set back into play. False when nothing has
+    // been recorded yet.
+    bool undo_last_set_result();
 
     // --- Available once stage() == Complete --------------------------------
     // Sorted best -> worst (wins desc, then differential desc; the coin
@@ -84,6 +117,7 @@ private:
     void finalize();
 
     std::uint32_t coin_seed_;
+    ClubForbiddenPairs forbidden_{};
     ClubStage stage_ = ClubStage::Set1;
     std::array<SetRecord, 2> sets_{};
 

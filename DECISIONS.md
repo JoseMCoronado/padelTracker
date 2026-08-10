@@ -272,19 +272,39 @@ deterministic coin flip from an injected seed. Names live in
 guests are minted per session with sentinel ids and never persisted).
 `application::ClubController` maps players to slots, runs each mini-set as
 a normal journaled match (club preset), consumes the completed
-`MatchState`, appends one CSV row per player to a results log (the future
-stats/sync feed), and remembers the round's Top 2 as the forbidden pair
-for the next round. Hosts (court-sim, court-display) only route: match
-complete -> mix screen -> standings screen. The picker UI enforces
-2-per-team selection and creates players through the host round trip.
+`MatchState`, and remembers the round's Top 2 as the forbidden pair for
+the next round. Hosts (court-sim, court-display) only route: match
+complete -> summary -> mix screen -> standings screen. The picker UI
+enforces 2-per-team selection and creates players through the host round
+trip.
+
+The results log (one CSV row per player, the future stats/sync feed) is
+written by `finish_round()` rather than the moment set 2 lands, because a
+remote undo can reopen a finished mini-set (ADR-0014) and rows already on
+disk would then describe a round that no longer happened.
+
+**Barred pairs (amended after the first club session).** A court's Top 2
+stay together for the next round but may never partner, and the mix rule
+above happily recreates them: on the sheet's round 2 court 2, A&G beating
+B&E turns into A&B vs G&E, exactly the pair the sheet forbids. The
+winners-split has two legal forms, so `ClubRound` takes up to two
+forbidden slot pairs and picks the form that avoids them (here A&E vs
+B&G, which is what the sheet plays). Two pairs, not one: a court hosts
+the Top 2 that stayed *and* the Top 2 that came up from the court below.
+The organizer marks the second pair by double-tapping the names in the
+picker, which cycles a crown badge (none, 1, 2); the previous round's own
+Top 2 is crowned automatically when the NEW ROUND suggestion lands.
+Crowned pairs are rejected as set-1 teammates and kept apart by the mix.
 
 Consequences: Every club rule is natively tested against the rotation
 sheet examples, including the coin-flip announcement; each mini-set gets
 the full journal/recovery treatment for free. A power cycle mid-round
 loses the round bookkeeping (a mini-set is minutes long); multi-court
 rotation (M8) can consume Top2/Bottom2 without touching the scoring path.
+Crowns are per-round UI state, not roster state: they describe where a
+player came from tonight, not who they are.
 
-## ADR-0014: Remote hold-to-undo, scoped to the holder's own last point
+## ADR-0014: Remote hold-to-undo, taking back the match's last point
 
 Status: Accepted — deliberate departure from spec 11.2 and 14.6
 
@@ -293,7 +313,7 @@ involved") and 11.2 states that no remote gesture undoes anything; the
 player role explicitly has "no destructive controls". In practice the
 court unit is at the net post and the players are on court with the
 remotes, so the only way to fix a mis-press today is to walk over and use
-the touchscreen. The user asked for a remote gesture and chose a 3 s hold
+the touchscreen. The user asked for a remote gesture and chose a hold
 over a double press.
 
 A double press was rejected: the 700 ms retrigger guard exists precisely
@@ -302,19 +322,38 @@ button, and the bench measurements on the arcade switches showed bounce
 bursts long enough to fake one. Turning the most likely accident into a
 destructive action inverts that safety property.
 
-Decision: Holding a paired remote for `undo_hold_ms` (3 s) sends a
-POINT_INTENT carrying `Action::UndoLastPoint`, which the court applies as
-`UndoLastScoringAction{only_team = the remote's team}` journaled with
-`InputSource::Remote`. Three constraints keep it from becoming a dispute
-generator:
+Decision: Holding a paired remote for `undo_hold_ms` sends a POINT_INTENT
+carrying `Action::UndoLastPoint`, which the court applies as
+`UndoLastScoringAction{}` journaled with `InputSource::Remote`. Two
+constraints keep it from becoming a dispute generator:
 
-- **Team-scoped.** The undo only proceeds if the *newest* point belongs to
-  the holder's team. It never reverses the opponents' point and never
-  reaches past one, so a rejected hold leaves the score exactly as it was.
 - **Once per hold.** The gesture fires a single intent no matter how long
   the button stays down; a second undo needs a fresh press.
 - **Refused while unsettled.** A hold arriving with a press parked in the
   conflict window, or with a conflict on screen, is rejected outright.
+
+**Amended after the first on-court session.** Two of the original choices
+did not survive contact with a real match:
+
+- **1.5 s, not 3 s.** Three seconds of standing still with a thumb on the
+  button is a long time between points; the hold is now `undo_hold_ms` =
+  1500 ms, still double the 700 ms retrigger guard and a third of the
+  pairing hold. The hold is timed from the physical button edge rather
+  than from the moment the debounce accepts it, so tuning the debounce
+  never stretches the gesture.
+- **Global, not team-scoped.** The undo originally only reversed a point
+  belonging to the holder's team, which meant a player who watched the
+  wrong button get pressed could do nothing about it and got a rejection
+  buzz for trying. Either remote now takes back whichever point came
+  last. It still reaches back exactly one point, and the on-screen
+  organizer undo already worked this way.
+
+Undo crosses game, set and match boundaries because the engine replays
+the journal rather than stepping the score back, so taking back a
+match-winning point reopens the match. The hosts mirror that: when the
+lifecycle leaves `Completed` while a post-match screen is up, they return
+to Live and, in a club round, un-record the mini-set the controller had
+already consumed.
 
 The award intent therefore moves from press-down to release: while the
 button is down, the press could still become a hold, and an undo that
@@ -325,13 +364,14 @@ of the press. Reusing the POINT_INTENT frame rather than adding a message
 type means the undo inherits sequence identity, dedup and retries, so a
 lost ACK cannot remove two points.
 
-Consequences: A player can silently reverse their own last point with
-nobody at the court unit, which is exactly what the spec was protecting
-against — accepted knowingly, mitigated by team scoping and a distinct
-500 ms court beep so an undo is never mistaken for a score. The organizer
-undo on the Live screen is unchanged and still unscoped. `undo_hold_ms`
-must stay below `pairing_hold_ms` (5 s), which only matters while
-unpaired, where the hold still means pairing and never sends an undo.
+Consequences: A player can silently reverse the last point with nobody at
+the court unit, which is exactly what the spec was protecting against —
+accepted knowingly, mitigated by a distinct 500 ms court beep so an undo
+is never mistaken for a score, and by the fact that the score is on a
+1024x600 display everyone can see. `undo_hold_ms` must stay above
+`stable_press_ms` (150 ms, or no press could score) and below
+`pairing_hold_ms` (5 s), which only matters while unpaired, where the
+hold still means pairing and never sends an undo.
 
 ## ADR-0015: Remote deep sleep after inactivity, and the waking press never scores
 
@@ -392,3 +432,71 @@ Verified on hardware 2026-08-05 with a 60 s bench timeout: slept on
 schedule, woke on the D1 press, that press left `presses=0 intents=0`, and
 the following press scored and was ACKed by the court in 490 ms. Repetition
 (the 100-cycle soak in spec line 1630) is still outstanding.
+
+## ADR-0016: A press is 150 ms of contact, not 30
+
+Status: Accepted — supersedes the debounce parameters in spec 11.2
+
+Context: The first real session on court produced phantom points. Players
+wear the remote clipped on, and a shirt dragging across the button as
+somebody turns is enough contact to score. Spec 11.2's initial
+`stable_press_ms` of 30 ms was chosen to reject switch bounce, and the
+bench measurements (`docs/HARDWARE_PINOUT.md`) show typical bounce of
+1.6-4.8 ms with bursts to 74 ms, so 30 ms was already marginal against
+bounce alone. Against fabric it is nowhere near enough.
+
+Decision: A press must hold the button down for `stable_press_ms` = 150 ms
+before it counts, on the remote and on the court unit's wired buttons
+alike. Release stays at 30 ms: a press that has been accepted should end
+promptly. The threshold is exposed as `PADEL_REMOTE_PRESS_MS` (range
+30-600) so a court that still sees phantom points can be retuned without
+a rebuild of anything but the remote.
+
+150 ms was picked as the widest window that still feels instant. Measured
+deliberate taps on the arcade switches run 190-320 ms (ADR-0015), so a
+real press clears it with margin, while the brushes that caused the
+problem are tens of milliseconds. It also comfortably swallows the 74 ms
+worst-case bounce burst, which the old value did not.
+
+Consequences: The `PressRegistered` cue now fires 150 ms after contact
+rather than 30 ms, which is the only user-visible cost and reads as
+instant. The scoring window is 150-1500 ms of hold, with anything longer
+becoming an undo (ADR-0014); those two constants have to be read
+together, and a Kconfig value above `undo_hold_ms` would make scoring
+impossible, which is why the range caps at 600. Native tests now cover
+brush-length contacts of 30-140 ms registering nothing.
+
+## ADR-0017: Broadcast-style scoreboard and a match summary before the flow moves on
+
+Status: Accepted
+
+Context: The live screen carried the set history as one line of text in
+the footer ("Set history: 7-6(5) 4-6 | current 5-6") plus a per-panel
+"Games 5   Sets 1". From the far side of a court, that is unreadable —
+which the first session confirmed. Players also wanted to look back at a
+match once it finished, and in club play the flow jumped straight from
+the last point to the mix or standings screen with nothing in between.
+
+Decision: Two changes, sharing one widget.
+
+The footer becomes a 132 px band holding a scoreboard laid out like the
+pro tour overlays: one row per team, a team-colored name plate with a
+serve dot, then one fixed-width cell per set, the set in progress lit and
+a lost set dimmed, the loser's tiebreak points in brackets. The per-panel
+games/sets text and the footer history line are gone; the giant point
+digits are untouched. `DisplayState` gained a structured `sets` vector so
+the UI builds columns from data rather than parsing the display strings.
+
+Completion routes through a new `Screen::MatchSummary` — winner, the same
+scoreboard, duration, points won per side with percentages, longest run —
+and its single CONTINUE button leads to the club mix, the club standings
+or the ordinary complete screen. Rally counts come from walking the
+journal and skipping compensated events, since `MatchState` only carries
+the current score.
+
+Consequences: The centre row shrinks from ~452 to ~376 px, still far more
+than the 216 px score line needs. Five set columns is the widest board
+the domain can produce and it fits, which the render test pins. The
+summary is one more tap in every club round; it is also the only place
+the round is reviewable, and it is where an undo lands when it reopens a
+finished match.

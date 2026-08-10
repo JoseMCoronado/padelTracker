@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "lvgl.h"
@@ -28,6 +29,37 @@ struct Shared {
     MatchSettings settings_snapshot{};  // last rendered settings (setup screen)
 };
 
+// --- Broadcast-style scoreboard ------------------------------------------------
+
+// Two stacked team rows with one cell per set, the way the pro tour overlays
+// print them: name plate, a games digit per set, the loser's tiebreak points
+// in brackets, the set in progress lit up. Shared by the live screen (where
+// it replaces the old games/sets text) and the post-match summary.
+struct ScoreboardWidget {
+    // Sized for its host: the live screen wants short rows under the score
+    // panels, the summary can afford taller ones.
+    void create(lv_obj_t* parent, lv_coord_t row_height, const lv_font_t* name_font,
+                const lv_font_t* digit_font);
+    void update(const ScoreboardModel& model);
+
+    // A five-set match is the longest the domain supports (domain kMaxSets).
+    static constexpr int kMaxColumns = 5;
+
+    lv_obj_t* root = nullptr;
+
+    struct Row {
+        lv_obj_t* panel = nullptr;
+        lv_obj_t* plate = nullptr;      // team-colored name plate
+        lv_obj_t* serve_dot = nullptr;
+        lv_obj_t* name = nullptr;
+        lv_obj_t* cells[kMaxColumns]{};
+        lv_obj_t* digits[kMaxColumns]{};
+        lv_obj_t* tiebreaks[kMaxColumns]{};
+    };
+    Row row_a{};
+    Row row_b{};
+};
+
 // --- Screens ------------------------------------------------------------------
 
 struct LiveScreen {
@@ -49,7 +81,6 @@ struct LiveScreen {
         lv_obj_t* name = nullptr;
         lv_obj_t* players = nullptr;
         lv_obj_t* points = nullptr;
-        lv_obj_t* games_sets = nullptr;
         lv_obj_t* serving_tag = nullptr;
         lv_obj_t* remote_tag = nullptr;
         lv_obj_t* plus_one = nullptr;
@@ -57,9 +88,8 @@ struct LiveScreen {
     TeamPanel team_a{};
     TeamPanel team_b{};
 
+    ScoreboardWidget scoreboard{};
     lv_obj_t* special_label = nullptr;  // DEUCE / GOLDEN POINT / TIEBREAK
-    lv_obj_t* history_label = nullptr;
-    lv_obj_t* serving_label = nullptr;
 
     // conflict banner (spec 12.4)
     lv_obj_t* conflict_banner = nullptr;
@@ -116,6 +146,18 @@ struct SetupScreen {
     void add_guest();
     void on_start_pressed();  // routes to start_match or start_club_round
 
+    // Crowns: a double tap in the picker cycles none -> 1 -> 2 -> none. Two
+    // players sharing a crown were a Top 2 together, so the round keeps them
+    // on opposite sides and out of the same mix pairing.
+    // "JOSE [1] & ZOE", or the empty-slot prompt.
+    std::string pair_label(const std::vector<ClubPlayer>& picked) const;
+    void on_tile_tapped(const ClubPlayer& player);
+    bool is_picked(std::uint32_t player_id) const;
+    std::uint8_t crown_of(std::uint32_t player_id) const;
+    void set_crown(std::uint32_t player_id, std::uint8_t crown);
+    void cycle_crown(std::uint32_t player_id);
+    void clear_crowns();
+
     lv_obj_t* club_panel = nullptr;        // players row (all modes)
     lv_obj_t* club_title_label = nullptr;  // retitled per mode
     lv_obj_t* club_pick_a_button = nullptr;
@@ -126,6 +168,7 @@ struct SetupScreen {
 
     lv_obj_t* picker_overlay = nullptr;    // created on demand, full-screen
     lv_obj_t* picker_title = nullptr;
+    lv_obj_t* picker_hint = nullptr;        // double-tap crown explainer
     lv_obj_t* picker_search = nullptr;
     lv_obj_t* picker_grid = nullptr;
     lv_obj_t* picker_count_label = nullptr;
@@ -133,13 +176,42 @@ struct SetupScreen {
 
     std::vector<ClubPlayer> roster_snapshot;  // last rendered roster
     std::vector<ClubPlayer> picker_items;     // players behind the grid tiles
+    std::vector<lv_obj_t*> picker_crowns;     // crown badge per grid tile
     std::vector<ClubPlayer> picked_a;
     std::vector<ClubPlayer> picked_b;
+    // Crown per player id, kept outside the picked lists so deselecting and
+    // reselecting a player (which is what a double tap does on the way past)
+    // does not lose the mark.
+    std::vector<std::pair<std::uint32_t, std::uint8_t>> crowns;
+    std::uint32_t last_tap_player = 0;
+    std::uint32_t last_tap_ms = 0;
     TeamId picking = TeamId::A;
     int guest_counter = 0;
     std::string pending_new_player;  // auto-select once it lands in the roster
     std::string club_hint_local;     // picker-side validation message
     std::uint32_t applied_suggestion_seq = 0;  // last NEW ROUND seed applied
+};
+
+struct SummaryScreen {
+    void create(Shared* shared);
+    void update(const SummaryViewModel& model);
+
+    // Duration, points won per team, best run: more than that does not fit
+    // between the scoreboard and the CONTINUE button.
+    static constexpr int kMaxStatRows = 5;
+
+    Shared* shared = nullptr;
+    lv_obj_t* root = nullptr;
+    lv_obj_t* title_label = nullptr;
+    lv_obj_t* winner_label = nullptr;
+    ScoreboardWidget scoreboard{};
+    struct StatRow {
+        lv_obj_t* panel = nullptr;
+        lv_obj_t* label = nullptr;
+        lv_obj_t* value = nullptr;
+    };
+    StatRow stats[kMaxStatRows]{};
+    lv_obj_t* continue_label = nullptr;
 };
 
 struct CompleteScreen {
@@ -218,6 +290,7 @@ struct Screens {
     Shared shared{};
     LiveScreen live{};
     SetupScreen setup{};
+    SummaryScreen summary{};
     CompleteScreen complete{};
     PairingScreen pairing{};
     DiagnosticsScreen diagnostics{};

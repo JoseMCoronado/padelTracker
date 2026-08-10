@@ -63,8 +63,6 @@ void build_team_panel(LiveScreen::TeamPanel& panel, lv_obj_t* parent, lv_color_t
     lv_obj_align(panel.plus_one, LV_ALIGN_TOP_RIGHT, -tokens::kSpaceS, tokens::kSpaceS);
     lv_obj_add_flag(panel.plus_one, LV_OBJ_FLAG_HIDDEN);
 
-    panel.games_sets = make_label(panel.panel, tokens::font_heading(), tokens::text());
-
     lv_obj_t* tag_row = lv_obj_create(panel.panel);
     lv_obj_set_size(tag_row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(tag_row, LV_OPA_TRANSP, 0);
@@ -92,8 +90,6 @@ void update_team_panel(LiveScreen::TeamPanel& panel, const TeamPanelModel& m,
         lv_obj_clear_flag(panel.players, LV_OBJ_FLAG_HIDDEN);
     }
     set_text(panel.points, m.points);
-
-    set_text(panel.games_sets, "Games " + m.games + "      Sets " + m.sets);
 
     if (m.serving) {
         lv_obj_clear_flag(panel.serving_tag, LV_OBJ_FLAG_HIDDEN);
@@ -273,21 +269,33 @@ void LiveScreen::create(Shared* shared_state) {
     build_team_panel(team_a, center, tokens::team_a(), on_award_a, this);
     build_team_panel(team_b, center, tokens::team_b(), on_award_b, this);
 
-    // --- Footer ------------------------------------------------------------
+    // --- Footer: broadcast-style scoreboard + organizer entry ---------------
     lv_obj_t* footer = lv_obj_create(root);
-    lv_obj_set_size(footer, LV_PCT(100), 56);
+    lv_obj_set_size(footer, LV_PCT(100), 132);
     lv_obj_set_style_bg_opa(footer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(footer, 0, 0);
     lv_obj_set_style_pad_all(footer, 0, 0);
+    lv_obj_set_style_pad_column(footer, tokens::kSpaceM, 0);
     lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(footer, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
 
-    history_label = make_label(footer, tokens::font_body(), tokens::text_muted());
-    special_label = make_label(footer, tokens::font_heading(), tokens::warning());
-    serving_label = make_label(footer, tokens::font_body(), tokens::text());
-    menu_button = make_button(footer, LV_SYMBOL_SETTINGS " MENU", tokens::kOrganizerTarget,
+    scoreboard.create(footer, 60, tokens::font_large(), tokens::font_banner());
+
+    lv_obj_t* footer_right = lv_obj_create(footer);
+    lv_obj_set_size(footer_right, 220, LV_PCT(100));
+    lv_obj_set_style_bg_opa(footer_right, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(footer_right, 0, 0);
+    lv_obj_set_style_pad_all(footer_right, 0, 0);
+    lv_obj_set_style_pad_row(footer_right, tokens::kSpaceXs, 0);
+    lv_obj_set_flex_flow(footer_right, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(footer_right, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END,
+                          LV_FLEX_ALIGN_END);
+    lv_obj_clear_flag(footer_right, LV_OBJ_FLAG_SCROLLABLE);
+
+    special_label = make_label(footer_right, tokens::font_heading(), tokens::warning());
+    menu_button = make_button(footer_right, LV_SYMBOL_SETTINGS " MENU", tokens::kOrganizerTarget,
                               on_menu, this);
 
     // --- Organizer overlay (hidden) ----------------------------------------
@@ -385,8 +393,7 @@ void LiveScreen::update(const LiveViewModel& m) {
     update_team_panel(team_b, m.team_b, m.point_flash == TeamId::B);
 
     set_text(special_label, m.special_label);
-    set_text(history_label, "Set history: " + m.set_history);
-    set_text(serving_label, m.serving_label);
+    scoreboard.update(m.scoreboard);
 
     if (m.conflict) {
         lv_obj_clear_flag(conflict_banner, LV_OBJ_FLAG_HIDDEN);

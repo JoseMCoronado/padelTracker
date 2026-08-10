@@ -107,7 +107,7 @@ TEST_CASE("retry while the press is still parked in the window is silent") {
     CHECK(f.points_a() == 1);
 }
 
-TEST_CASE("remote undo takes back the team's own point") {
+TEST_CASE("remote undo takes back the last point") {
     Fixture f;
     f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 1));
     f.expire_window();
@@ -122,7 +122,9 @@ TEST_CASE("remote undo takes back the team's own point") {
     CHECK(f.service.counters().remote_undos == 1);
 }
 
-TEST_CASE("remote undo cannot reverse the opposing team's point") {
+TEST_CASE("either remote takes back the last point, whoever scored it") {
+    // On court nobody wants to work out which button owns the mistake
+    // (ADR-0014), so a Team A hold reverses Team B's point.
     Fixture f;
     f.service.handle_point_intent(intent(kRemoteB, TeamId::B, 1));
     f.expire_window();
@@ -132,9 +134,33 @@ TEST_CASE("remote undo cannot reverse the opposing team's point") {
     f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 1));
     const auto acks = f.acks();
     REQUIRE(acks.size() == 1);
-    CHECK(acks[0].status == protocol::AckStatus::RejectedNothingToUndo);
-    CHECK(f.points_b() == 1);
-    CHECK(f.service.counters().remote_undos == 0);
+    CHECK(acks[0].status == protocol::AckStatus::Accepted);
+    CHECK(f.points_b() == 0);
+    CHECK(f.service.counters().remote_undos == 1);
+}
+
+TEST_CASE("an undo after the winning point reopens the finished match") {
+    // The court display walks its own screens back; the service only has to
+    // let the undo through and return the match to Active.
+    Fixture f;
+    std::uint32_t sequence = 0;
+    const auto score = [&](std::uint32_t remote, TeamId team) {
+        f.service.handle_point_intent(intent(remote, team, ++sequence));
+        f.expire_window();
+        f.acks();
+    };
+    // Team A runs the whole match out; the exact count does not matter.
+    while (f.service.state().lifecycle != domain::MatchLifecycle::Completed) {
+        score(kRemoteA, TeamId::A);
+    }
+    REQUIRE(f.service.state().winner.has_value());
+
+    f.service.handle_point_intent(undo_intent(kRemoteB, TeamId::B, ++sequence));
+    const auto acks = f.acks();
+    REQUIRE(acks.size() == 1);
+    CHECK(acks[0].status == protocol::AckStatus::Accepted);
+    CHECK(f.service.state().lifecycle == domain::MatchLifecycle::Active);
+    CHECK_FALSE(f.service.state().winner.has_value());
 }
 
 TEST_CASE("remote undo with nothing to undo is rejected, not silently accepted") {

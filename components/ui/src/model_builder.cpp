@@ -19,6 +19,50 @@ std::string team_display_name(const std::string& configured, TeamId team) {
     return team == TeamId::A ? "TEAM A" : "TEAM B";
 }
 
+// The scoreboard is read from across the court, so it prefers the player
+// names the crowd recognises over the configured team name.
+std::string scoreboard_name(const MatchSettings& settings, TeamId team) {
+    const std::string& players = team == TeamId::A ? settings.players_a : settings.players_b;
+    if (!players.empty()) {
+        return players;
+    }
+    return team_display_name(team == TeamId::A ? settings.team_a_name : settings.team_b_name,
+                             team);
+}
+
+ScoreboardModel build_scoreboard(const domain::DisplayState& display,
+                                 const MatchSettings& settings,
+                                 bool show_serving) {
+    ScoreboardModel board{};
+    board.name_a = scoreboard_name(settings, TeamId::A);
+    board.name_b = scoreboard_name(settings, TeamId::B);
+    if (show_serving) {
+        board.serving = display.serving_team;
+    }
+
+    for (const domain::SetLine& set : display.sets) {
+        ScoreColumn column{};
+        column.games_a = std::to_string(set.games_a);
+        column.games_b = std::to_string(set.games_b);
+        // Only the loser's tiebreak points are worth the space, exactly as
+        // the broadcast overlays print 7-6(5).
+        if (set.tiebreak_points_a && set.tiebreak_points_b) {
+            if (*set.tiebreak_points_a < *set.tiebreak_points_b) {
+                column.tiebreak_a = "(" + std::to_string(*set.tiebreak_points_a) + ")";
+            } else {
+                column.tiebreak_b = "(" + std::to_string(*set.tiebreak_points_b) + ")";
+            }
+        }
+        column.current = !set.completed;
+        column.won = set.winner;
+        board.columns.push_back(std::move(column));
+    }
+    if (board.columns.empty()) {
+        board.columns.push_back(ScoreColumn{"0", "0", "", "", true, std::nullopt});
+    }
+    return board;
+}
+
 }  // namespace
 
 const std::vector<std::string>& preset_names() {
@@ -109,22 +153,9 @@ LiveViewModel build_live_model(const application::CourtService& service,
     model.radio_ok = (!model.team_a.remote_assigned || model.team_a.remote_ok) &&
                      (!model.team_b.remote_assigned || model.team_b.remote_ok);
 
-    std::string history;
-    for (const std::string& set : d.set_history) {
-        if (!history.empty()) {
-            history += "  ";
-        }
-        history += set;
-    }
-    model.set_history = history.empty()
-                            ? "current " + model.team_a.games + "-" + model.team_b.games
-                            : history + "  |  current " + model.team_a.games + "-" +
-                                  model.team_b.games;
-
-    if (serving_enabled && state.lifecycle != domain::MatchLifecycle::NotStarted) {
-        model.serving_label =
-            "Serving: " + (d.serving_team == TeamId::A ? model.team_a.name : model.team_b.name);
-    }
+    model.scoreboard = build_scoreboard(
+        d, settings,
+        serving_enabled && state.lifecycle != domain::MatchLifecycle::NotStarted);
 
     if (const auto target = service.next_undo_target()) {
         model.undo_preview = target->team;
@@ -161,6 +192,62 @@ CompleteViewModel build_complete_model(const application::CourtService& service,
         std::snprintf(buffer, sizeof(buffer), "Duration: %llu min",
                       static_cast<unsigned long long>(match_duration_ms / 60000));
         model.duration_label = buffer;
+    }
+    return model;
+}
+
+SummaryViewModel build_summary_model(const application::CourtService& service,
+                                     const MatchSettings& settings,
+                                     std::uint64_t match_duration_ms,
+                                     const std::string& title_override,
+                                     const std::string& continue_label) {
+    const domain::MatchState& state = service.state();
+    const domain::DisplayState d = domain::project(state);
+    const domain::MatchStats stats = domain::summarize(service.journal());
+
+    SummaryViewModel model{};
+    model.title = title_override.empty() ? "MATCH COMPLETE" : title_override;
+    model.continue_label = continue_label;
+    model.scoreboard = build_scoreboard(d, settings, /*show_serving=*/false);
+
+    const std::string name_a = scoreboard_name(settings, TeamId::A);
+    const std::string name_b = scoreboard_name(settings, TeamId::B);
+    if (d.winner) {
+        model.winner_label = (*d.winner == TeamId::A ? name_a : name_b) + " WIN";
+    } else {
+        model.winner_label = "NO WINNER RECORDED";
+    }
+
+    char buffer[64];
+    if (match_duration_ms > 0) {
+        std::snprintf(buffer, sizeof(buffer), "%llu min",
+                      static_cast<unsigned long long>(match_duration_ms / 60000));
+        model.stats.push_back({"Duration", buffer});
+    }
+
+    // The counts are uint32_t, which is unsigned long on xtensa, so every one
+    // of them is cast to unsigned for the format string.
+    const std::uint32_t total = stats.points_a + stats.points_b;
+    std::snprintf(buffer, sizeof(buffer), "%u", static_cast<unsigned>(total));
+    model.stats.push_back({"Points played", buffer});
+    if (total > 0) {
+        const auto share = [&](std::uint32_t points) {
+            return static_cast<unsigned>((points * 100 + total / 2) / total);
+        };
+        std::snprintf(buffer, sizeof(buffer), "%u  (%u%%)",
+                      static_cast<unsigned>(stats.points_a), share(stats.points_a));
+        model.stats.push_back({name_a, buffer});
+        std::snprintf(buffer, sizeof(buffer), "%u  (%u%%)",
+                      static_cast<unsigned>(stats.points_b), share(stats.points_b));
+        model.stats.push_back({name_b, buffer});
+    }
+    if (stats.longest_streak > 1 && stats.longest_streak_team) {
+        std::snprintf(buffer, sizeof(buffer), "%u in a row",
+                      static_cast<unsigned>(stats.longest_streak));
+        model.stats.push_back(
+            {std::string("Best run - ") +
+                 (*stats.longest_streak_team == TeamId::A ? name_a : name_b),
+             buffer});
     }
     return model;
 }
@@ -203,6 +290,23 @@ ClubViewModel build_club_model(const application::PlayerRoster& roster,
         }
     }
     return model;
+}
+
+std::vector<application::ClubController::ForbiddenPair> crown_pairs(
+    const std::array<ClubPlayer, 4>& picked) {
+    std::vector<application::ClubController::ForbiddenPair> pairs;
+    for (std::uint8_t crown = 1; crown <= kMaxCrownGroups; ++crown) {
+        std::vector<std::uint32_t> wearers;
+        for (const ClubPlayer& player : picked) {
+            if (player.crown == crown) {
+                wearers.push_back(player.id);
+            }
+        }
+        if (wearers.size() == 2) {
+            pairs.push_back({wearers[0], wearers[1]});
+        }
+    }
+    return pairs;
 }
 
 bool suggest_next_round_picks(const application::ClubController& controller,

@@ -262,7 +262,7 @@ void print_summary(std::int64_t now) {
     if (worst_bounce_us >= kBounceWarnUs) {
         ESP_LOGW(TAG,
                  "verdict: worst bounce %" PRIu32 " us >= %d ms - raise stable_press_ms in "
-                 "components/remote_core and the 30 ms in WiredButton",
+                 "components/remote_core and kWiredButtonPressMs in court-display",
                  worst_bounce_us, CONFIG_BUTTON_TEST_BOUNCE_WARN_MS);
     } else {
         ESP_LOGI(TAG,

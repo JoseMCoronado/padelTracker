@@ -151,14 +151,77 @@ TEST_CASE("live model projects names, points, serving, and undo preview") {
     CHECK(model.team_b.points == "0");
     CHECK(model.team_a.serving);
     CHECK_FALSE(model.team_b.serving);
-    CHECK(model.serving_label == "Serving: LOS TIGRES");
     CHECK(model.status_label == "LIVE");
     CHECK_FALSE(model.paused);
     CHECK_FALSE(model.conflict);
     CHECK_FALSE(model.storage_fault);
     REQUIRE(model.undo_preview.has_value());
     CHECK(*model.undo_preview == TeamId::A);
-    CHECK(model.set_history == "current 0-0");
+
+    // The scoreboard names the pair when it can and marks the server.
+    CHECK(model.scoreboard.name_a == "LOS TIGRES");
+    CHECK(model.scoreboard.name_b == "TEAM B");
+    REQUIRE(model.scoreboard.serving.has_value());
+    CHECK(*model.scoreboard.serving == TeamId::A);
+    REQUIRE(model.scoreboard.columns.size() == 1);
+    CHECK(model.scoreboard.columns[0].current);
+    CHECK(model.scoreboard.columns[0].games_a == "0");
+    CHECK(model.scoreboard.columns[0].games_b == "0");
+}
+
+TEST_CASE("scoreboard keeps one column per set with the loser's tiebreak points") {
+    Fixture f;
+    f.settings.players_a = "JOSE / ZOE";
+    f.service.start_match(TeamId::A);
+    // Take the first set 6-0 so a second column opens behind it.
+    for (int game = 0; game < 6; ++game) {
+        for (int point = 0; point < 4; ++point) {
+            f.service.award_point_local(TeamId::A, InputSource::TouchscreenAdmin);
+        }
+    }
+    const ui::LiveViewModel model =
+        ui::build_live_model(f.service, f.settings, f.clock.now_ms());
+
+    // Player names beat the configured team name on the scoreboard.
+    CHECK(model.scoreboard.name_a == "JOSE / ZOE");
+    REQUIRE(model.scoreboard.columns.size() == 2);
+    CHECK(model.scoreboard.columns[0].games_a == "6");
+    CHECK(model.scoreboard.columns[0].games_b == "0");
+    CHECK_FALSE(model.scoreboard.columns[0].current);
+    REQUIRE(model.scoreboard.columns[0].won.has_value());
+    CHECK(*model.scoreboard.columns[0].won == TeamId::A);
+    CHECK(model.scoreboard.columns[1].current);
+}
+
+TEST_CASE("summary model counts rallies from the journal and skips undone ones") {
+    Fixture f;
+    f.settings.team_a_name = "LOS TIGRES";
+    f.service.start_match(TeamId::A);
+    for (int i = 0; i < 5; ++i) {
+        f.service.award_point_local(TeamId::A, InputSource::TouchscreenAdmin);
+    }
+    f.service.award_point_local(TeamId::B, InputSource::TouchscreenAdmin);
+    f.service.undo_last_scoring_action();  // that Team B point never happened
+
+    const ui::SummaryViewModel model =
+        ui::build_summary_model(f.service, f.settings, 42 * 60 * 1000, "SET 1 COMPLETE",
+                                "MIX IT UP");
+
+    CHECK(model.title == "SET 1 COMPLETE");
+    CHECK(model.continue_label == "MIX IT UP");
+
+    const auto value_for = [&](const std::string& label) {
+        for (const auto& row : model.stats) {
+            if (row.first == label) {
+                return row.second;
+            }
+        }
+        return std::string{"<missing>"};
+    };
+    CHECK(value_for("Duration") == "42 min");
+    CHECK(value_for("Points played") == "5");
+    CHECK(value_for("LOS TIGRES") == "5  (100%)");
+    CHECK(value_for("Best run - LOS TIGRES") == "5 in a row");
 }
 
 TEST_CASE("live model surfaces special states and pause") {

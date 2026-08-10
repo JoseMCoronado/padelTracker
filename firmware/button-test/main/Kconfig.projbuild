@@ -72,12 +72,15 @@ config BUTTON_TEST_SETTLE_MS
 
 config BUTTON_TEST_BOUNCE_WARN_MS
     int "Warn when a bounce burst reaches this many ms"
-    range 1 200
-    default 30
+    range 1 600
+    default 150
     help
         The debounce constant the product firmware assumes:
         RemoteCoreConfig::stable_press_ms and WiredButton in
-        firmware/court-display. A warning here means that constant has to be
-        raised before the switches are trusted.
+        firmware/court-display, both 150 ms since ADR-0016. A warning here
+        means a bounce burst can outlast the debounce, so the constant has to
+        be raised before the switches are trusted. Release bounce is not the
+        same hazard: a burst can only fake a press by holding contact for the
+        full press threshold.
 
 endmenu

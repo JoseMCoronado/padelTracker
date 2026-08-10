@@ -26,18 +26,15 @@ std::string uppercased(std::string text) {
     return text;
 }
 
-std::string pair_label(const std::vector<ClubPlayer>& picked) {
-    if (picked.empty()) {
-        return "tap to pick 2 players";
-    }
-    std::string label = uppercased(picked[0].name);
-    if (picked.size() > 1) {
-        label += " & " + uppercased(picked[1].name);
-    } else {
-        label += "  (pick 1 more)";
-    }
-    return label;
+// Two taps closer together than this are one double tap; anything slower is
+// two separate picks.
+constexpr std::uint32_t kDoubleTapMs = 450;
+
+std::string crowned_name(const std::string& name, std::uint8_t crown) {
+    return crown == 0 ? uppercased(name)
+                      : uppercased(name) + " [" + std::to_string(crown) + "]";
 }
+
 
 lv_obj_t* transparent_row(lv_obj_t* parent) {
     lv_obj_t* row = lv_obj_create(parent);
@@ -115,6 +112,14 @@ void SetupScreen::update_club(const ClubViewModel& club) {
         applied_suggestion_seq = club.suggestion_seq;
         picked_a = club.suggested_a;
         picked_b = club.suggested_b;
+        // Last round's Top 2 wear crown 1 from the start; the organizer adds
+        // crown 2 for the pair arriving from the other court.
+        clear_crowns();
+        for (const std::vector<ClubPlayer>& side : {club.suggested_a, club.suggested_b}) {
+            for (const ClubPlayer& player : side) {
+                set_crown(player.id, 1);
+            }
+        }
         club_hint_local.clear();
     }
 
@@ -158,10 +163,22 @@ void SetupScreen::on_start_pressed() {
             set_text(club_hint_label, club_hint_local);
             return;
         }
+        std::array<ClubPlayer, 4> picked{picked_a[0], picked_a[1], picked_b[0], picked_b[1]};
+        for (ClubPlayer& player : picked) {
+            player.crown = crown_of(player.id);
+        }
+        // Catch the rule here rather than letting the host reject the round:
+        // the organizer is looking at the tiles that need moving.
+        if ((picked[0].crown != 0 && picked[0].crown == picked[1].crown) ||
+            (picked[2].crown != 0 && picked[2].crown == picked[3].crown)) {
+            club_hint_local =
+                "Players with the same crown can't be teammates - split them across the teams";
+            set_text(club_hint_label, club_hint_local);
+            return;
+        }
         club_hint_local.clear();
         if (shared->callbacks.start_club_round) {
-            shared->callbacks.start_club_round(
-                {picked_a[0], picked_a[1], picked_b[0], picked_b[1]}, read_settings());
+            shared->callbacks.start_club_round(picked, read_settings());
         }
         return;
     }
@@ -191,6 +208,10 @@ void SetupScreen::open_picker(TeamId team) {
         lv_obj_t* header = transparent_row(picker_overlay);
         picker_title = make_label(header, tokens::font_large(), tokens::text());
         picker_count_label = make_label(header, tokens::font_heading(), tokens::text_muted());
+
+        picker_hint = make_label(picker_overlay, tokens::font_body(), tokens::warning());
+        lv_label_set_long_mode(picker_hint, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(picker_hint, LV_PCT(100));
 
         lv_obj_t* controls = transparent_row(picker_overlay);
         picker_search = lv_textarea_create(controls);
@@ -266,6 +287,7 @@ void SetupScreen::rebuild_picker_grid() {
 
     set_text(picker_title,
              picking == TeamId::A ? "PICK 2 PLAYERS - TEAM A" : "PICK 2 PLAYERS - TEAM B");
+    set_text(picker_hint, "Double-tap a name to crown it - same crown, never teammates");
 
     const std::string needle = lowered(lv_textarea_get_text(picker_search));
     picker_items.clear();
@@ -281,6 +303,7 @@ void SetupScreen::rebuild_picker_grid() {
         }
     }
 
+    picker_crowns.clear();
     for (std::size_t i = 0; i < picker_items.size(); ++i) {
         const ClubPlayer& player = picker_items[i];
         lv_obj_t* tile = make_button(
@@ -290,7 +313,7 @@ void SetupScreen::rebuild_picker_grid() {
                 const auto index =
                     reinterpret_cast<std::uintptr_t>(lv_obj_get_user_data(lv_event_get_target(e)));
                 if (index < s->picker_items.size()) {
-                    s->toggle_pick(s->picker_items[index]);
+                    s->on_tile_tapped(s->picker_items[index]);
                     // Restyle in place: rebuilding here would delete the very
                     // widget this event is dispatching on.
                     s->refresh_picker_tiles();
@@ -304,6 +327,16 @@ void SetupScreen::rebuild_picker_grid() {
         lv_label_set_long_mode(tile_label, LV_LABEL_LONG_DOT);
         lv_obj_set_width(tile_label, LV_PCT(100));
         lv_obj_set_style_text_align(tile_label, LV_TEXT_ALIGN_CENTER, 0);
+
+        // Crown badge, top-right, hidden until the player is double-tapped.
+        lv_obj_t* crown = make_label(tile, tokens::font_small(), tokens::bg());
+        lv_obj_set_style_bg_color(crown, tokens::warning(), 0);
+        lv_obj_set_style_bg_opa(crown, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(crown, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_pad_all(crown, tokens::kSpaceXs, 0);
+        lv_obj_align(crown, LV_ALIGN_TOP_RIGHT, tokens::kSpaceS, -tokens::kSpaceS);
+        lv_obj_add_flag(crown, LV_OBJ_FLAG_HIDDEN);
+        picker_crowns.push_back(crown);
     }
 
     if (picker_items.empty()) {
@@ -350,11 +383,97 @@ void SetupScreen::refresh_picker_tiles() {
             lv_obj_clear_state(tile, LV_STATE_DISABLED);
             lv_obj_set_style_bg_color(tile, tokens::surface_raised(), 0);
         }
+
+        if (index < picker_crowns.size()) {
+            lv_obj_t* crown = picker_crowns[index];
+            const std::uint8_t mark = crown_of(player.id);
+            if (mark == 0) {
+                lv_obj_add_flag(crown, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_clear_flag(crown, LV_OBJ_FLAG_HIDDEN);
+                set_text(crown, std::to_string(mark));
+                lv_obj_move_foreground(crown);
+            }
+        }
     }
 
     // Keep the setup-row pair labels live behind the modal too.
     set_text(club_a_label, pair_label(picked_a));
     set_text(club_b_label, pair_label(picked_b));
+}
+
+std::string SetupScreen::pair_label(const std::vector<ClubPlayer>& picked) const {
+    if (picked.empty()) {
+        return "tap to pick 2 players";
+    }
+    std::string label = crowned_name(picked[0].name, crown_of(picked[0].id));
+    if (picked.size() > 1) {
+        label += " & " + crowned_name(picked[1].name, crown_of(picked[1].id));
+    } else {
+        label += "  (pick 1 more)";
+    }
+    return label;
+}
+
+std::uint8_t SetupScreen::crown_of(std::uint32_t player_id) const {
+    for (const auto& entry : crowns) {
+        if (entry.first == player_id) {
+            return entry.second;
+        }
+    }
+    return 0;
+}
+
+void SetupScreen::set_crown(std::uint32_t player_id, std::uint8_t crown) {
+    for (auto it = crowns.begin(); it != crowns.end(); ++it) {
+        if (it->first == player_id) {
+            if (crown == 0) {
+                crowns.erase(it);
+            } else {
+                it->second = crown;
+            }
+            return;
+        }
+    }
+    if (crown != 0) {
+        crowns.push_back({player_id, crown});
+    }
+}
+
+void SetupScreen::cycle_crown(std::uint32_t player_id) {
+    const std::uint8_t next = static_cast<std::uint8_t>((crown_of(player_id) + 1) %
+                                                        (kMaxCrownGroups + 1));
+    set_crown(player_id, next);
+}
+
+void SetupScreen::clear_crowns() { crowns.clear(); }
+
+void SetupScreen::on_tile_tapped(const ClubPlayer& player) {
+    const std::uint32_t now = lv_tick_get();
+    const bool double_tap =
+        player.id == last_tap_player && now - last_tap_ms < kDoubleTapMs;
+    last_tap_player = player.id;
+    last_tap_ms = now;
+
+    if (!double_tap) {
+        toggle_pick(player);
+        return;
+    }
+    // The first tap of the pair already toggled the pick. Put the player back
+    // on the team if that toggle removed them, then move the crown on.
+    last_tap_ms = 0;  // a third tap starts a fresh pair
+    if (!is_picked(player.id)) {
+        toggle_pick(player);
+    }
+    cycle_crown(player.id);
+}
+
+bool SetupScreen::is_picked(std::uint32_t player_id) const {
+    const auto has = [player_id](const std::vector<ClubPlayer>& list) {
+        return std::any_of(list.begin(), list.end(),
+                           [player_id](const ClubPlayer& p) { return p.id == player_id; });
+    };
+    return has(picked_a) || has(picked_b);
 }
 
 void SetupScreen::toggle_pick(const ClubPlayer& player) {

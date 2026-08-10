@@ -1,6 +1,7 @@
 #include "padel/domain/projection.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace padel::domain {
 namespace {
@@ -46,8 +47,31 @@ DisplayState project(const MatchState& state) {
         const SetScore& set = state.completed_sets[i];
         display.set_history.push_back(set_history_entry(set));
         differential += static_cast<int>(set.games_a) - static_cast<int>(set.games_b);
+
+        SetLine line{};
+        line.games_a = set.games_a;
+        line.games_b = set.games_b;
+        line.tiebreak_points_a = set.tiebreak_points_a;
+        line.tiebreak_points_b = set.tiebreak_points_b;
+        line.completed = true;
+        line.winner = set.games_a > set.games_b ? TeamId::A : TeamId::B;
+        display.sets.push_back(line);
     }
     display.game_differential = differential;
+
+    // The set in progress is the last scoreboard column. A finished match has
+    // none: its last set already moved into completed_sets.
+    if (state.lifecycle != MatchLifecycle::NotStarted &&
+        state.lifecycle != MatchLifecycle::Completed) {
+        SetLine line{};
+        line.games_a = state.current_set.games_a;
+        line.games_b = state.current_set.games_b;
+        if (state.in_tiebreak) {
+            line.tiebreak_points_a = state.tiebreak_points_a;
+            line.tiebreak_points_b = state.tiebreak_points_b;
+        }
+        display.sets.push_back(line);
+    }
 
     if (state.in_tiebreak) {
         display.is_tiebreak = true;
@@ -81,6 +105,44 @@ DisplayState project(const MatchState& state) {
         display.points_b = point_label(b);
     }
     return display;
+}
+
+MatchStats summarize(const std::vector<StoredEvent>& journal) {
+    std::unordered_set<EventId> compensated;
+    for (const StoredEvent& stored : journal) {
+        if (const auto* undo = std::get_if<ScoringActionUndone>(&stored.payload)) {
+            compensated.insert(undo->undone_event_id);
+        }
+    }
+
+    MatchStats stats{};
+    std::optional<TeamId> streak_team{};
+    std::uint32_t streak = 0;
+    for (const StoredEvent& stored : journal) {
+        if (std::holds_alternative<MatchCreated>(stored.payload) ||
+            std::holds_alternative<MatchReset>(stored.payload)) {
+            stats = MatchStats{};  // a reset starts a new match
+            streak_team.reset();
+            streak = 0;
+            continue;
+        }
+        const auto* point = std::get_if<PointAwarded>(&stored.payload);
+        if (point == nullptr || compensated.count(stored.id) != 0) {
+            continue;
+        }
+        if (point->team == TeamId::A) {
+            ++stats.points_a;
+        } else {
+            ++stats.points_b;
+        }
+        streak = streak_team && *streak_team == point->team ? streak + 1 : 1;
+        streak_team = point->team;
+        if (streak > stats.longest_streak) {
+            stats.longest_streak = streak;
+            stats.longest_streak_team = point->team;
+        }
+    }
+    return stats;
 }
 
 std::uint8_t display_code(const MatchState& state, TeamId team) {

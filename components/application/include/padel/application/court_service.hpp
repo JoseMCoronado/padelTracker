@@ -115,9 +115,9 @@ public:
 
     // --- Organizer / lifecycle commands (all journaled durably) -----------
     Result<EventId, ServiceError> start_match(TeamId initial_serving_team);
-    // only_team restricts the undo to a point awarded to that team, which is
-    // how a remote hold takes back its own point (ADR-0014); the organizer
-    // passes nullopt and can undo whichever point came last.
+    // only_team restricts the undo to a point awarded to that team. Nothing
+    // uses that today — remotes and the organizer both undo whichever point
+    // came last (ADR-0014) — but the domain filter stays available.
     Result<EventId, ServiceError> undo_last_scoring_action(
         std::optional<TeamId> only_team = std::nullopt,
         InputSource source = InputSource::TouchscreenAdmin);
@@ -132,6 +132,9 @@ public:
     std::optional<domain::PointAwarded> next_undo_target() const {
         return engine_.next_undo_target();
     }
+    // Full event history, for projections that need more than the current
+    // score (the post-match summary counts rallies from it).
+    const std::vector<domain::StoredEvent>& journal() const { return engine_.journal(); }
     std::vector<protocol::AckPacket> drain_acks();
     const protocol::Deduplicator& deduplicator() const { return dedup_; }
     // Latched when a durable append fails; UI must surface it (spec 12.5).
@@ -169,8 +172,9 @@ private:
     static constexpr std::size_t kRecentConflictIdentities = 8;
 
     // Remote hold-to-undo (ADR-0014): arrives on the POINT_INTENT frame with
-    // Action::UndoLastPoint, after the paired/team/dedup checks.
-    void handle_undo_intent(const protocol::IntentIdentity& intent, TeamId team);
+    // Action::UndoLastPoint, after the paired/team/dedup checks. The sending
+    // team is deliberately ignored — the last point goes back either way.
+    void handle_undo_intent(const protocol::IntentIdentity& intent);
 
     // Shared commit path. Returns the ACK status the press earns and fills
     // event_id when a point was applied.

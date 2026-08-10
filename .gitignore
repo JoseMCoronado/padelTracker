@@ -11,5 +11,8 @@ firmware/remote/sdkconfig.s3*
 # Development radio keys (docs/PAIRING.md); never commit real keys.
 firmware/keys/dev_keys.h
 
+# idf.py's backup of the previous sdkconfig, rewritten on every config change.
+firmware/*/sdkconfig.old
+
 # Simulator runtime data
 court-sim-data/

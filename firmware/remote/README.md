@@ -50,7 +50,7 @@ the same low-side transistor as on the bench; wiring is in
 
 Everything else is identical to the XIAO build: hold the arcade button 5 s to
 advertise for pairing, then one press = one point with the lamp as the feedback
-LED, and a 3 s hold takes that point back again.
+LED, and a 1.5 s hold takes the last point back again.
 
 ## Behavior
 
@@ -58,15 +58,17 @@ LED, and a 3 s hold takes that point back again.
   5 s enters pairing-advertise (broadcasts `PAIR_REQUEST`; the court's
   pairing window + organizer confirmation complete the flow, see
   `docs/PAIRING.md`).
-- Paired: one debounced press = one point intent with stop-and-wait
+- Paired: one press held at least 150 ms = one point intent with stop-and-wait
   retries (450 ms timeout, 5 attempts). Feedback per the spec 11.3 table.
   The intent goes out when the button is *released*, not when it goes down,
   because a press that keeps going becomes the undo gesture; the press blink
-  still fires on contact so it feels the same.
-- Paired, held 3 s: takes back that team's own last point (ADR-0014), with a
-  single 300 ms pulse as the cue. It fires once per hold, refuses if the
-  newest point on the board belongs to the other team, and the court answers
-  a refusal with `RejectedNothingToUndo` (the amber "rejected" blink).
+  still fires at the 150 ms mark so it feels immediate. Anything shorter is a
+  brush, not a press, and scores nothing (ADR-0016); tune the threshold with
+  `CONFIG_PADEL_REMOTE_PRESS_MS` if a court still records phantom points.
+- Paired, held 1.5 s: takes back the match's last point whichever team scored
+  it (ADR-0014), with a single 300 ms pulse as the cue. It fires once per
+  hold, and the court answers a refusal with `RejectedNothingToUndo` (the
+  amber "rejected" blink) when there is nothing left to undo.
 - The court's MAC is learned from the first ACK / `PAIR_ASSIGN` and
   persisted; intents go unicast afterwards.
 - Sequence baselines persist to NVS in chunks of 32 so identities are

@@ -71,8 +71,12 @@ Commands: `a` / `b` award a point, `undo`, `state`, `new <preset>`, `reset`,
 
 The real 1024x600 LVGL UI in an SDL window, driven by the real
 `CourtService`, journal, and `RemoteCore` remotes. Keys: `a`/`b` remote
-press, `Shift+a`/`b` wired button, `l` packet loss, `p` pairing mode, `r`
-power-cycle (journal recovery), `q` quit.
+press, `1`/`2` remote hold-to-undo, `Shift+a`/`b` wired button, `l` packet
+loss, `p` pairing mode, `r` power-cycle (journal recovery), `q` quit.
+
+The last point of a match opens the summary screen — score, duration, points
+won per side, longest run — and CONTINUE from there moves the flow on. An undo
+taken after that point reopens the match and goes back to the live screen.
 
 Players can be picked from the roster modal (search, NEW PLAYER, ADD
 GUEST) in every mode. If a team name is left at the generic default the
@@ -82,8 +86,11 @@ MODE to "Club round" — there the pick is required (2 per team) — then
 START CLUB ROUND. The round plays two first-to-3 mini-sets — after set 1 the
 mix screen announces the reshuffled teams, and after set 2 the standings
 screen shows Top 2 / Bottom 2 (ties broken by an announced automatic coin
-flip). Roster lives in `court-sim-data/roster.txt`; per-player results
-append to `court-sim-data/club_results.csv`.
+flip). Two players who arrive as a Top 2 can never be teammates: the previous
+round's pair is barred automatically, and double-tapping a name in the picker
+crowns it so the pair coming up from another court is barred too. Roster lives
+in `court-sim-data/roster.txt`; per-player results append to
+`court-sim-data/club_results.csv` when the round is closed.
 
 ## Firmware builds
 

@@ -165,7 +165,11 @@ void init_gpio() {
     ESP_ERROR_CHECK(esp_timer_create(&off_args, &s_buzzer_off_timer));
 }
 
-// Simple 30 ms press debounce for the arcade buttons; one event per press.
+// Press debounce for the arcade buttons; one event per press. Matches
+// RemoteCoreConfig::stable_press_ms so a shirt brushing the post does not
+// score on either input path.
+constexpr std::uint64_t kWiredButtonPressMs = 150;
+
 class WiredButton {
 public:
     explicit WiredButton(gpio_num_t pin) : pin_(pin) {}
@@ -176,7 +180,7 @@ public:
             raw_ = level;
             edge_at_ms_ = now_ms;
         }
-        if (raw_ != stable_ && now_ms - edge_at_ms_ >= 30) {
+        if (raw_ != stable_ && now_ms - edge_at_ms_ >= kWiredButtonPressMs) {
             stable_ = raw_;
             if (stable_) {
                 ++presses_;
@@ -219,6 +223,7 @@ struct AppCommand {
         StartMatch,
         ResetConfirmed,
         NewMatch,
+        SummaryContinue,
         ShowScreen,
         BeginPairing,
         CancelPairing,
@@ -420,6 +425,34 @@ struct CourtApp {
         }
     }
 
+    // The summary reads back the mini-set that just finished, so it names the
+    // set the club round has already moved past.
+    std::string summary_title() const {
+        if (!club_active) {
+            return {};
+        }
+        return club->stage() == domain::ClubStage::Complete ? "CLUB SET 2 COMPLETE"
+                                                            : "CLUB SET 1 COMPLETE";
+    }
+
+    std::string summary_continue_label() const {
+        if (!club_active) {
+            return "CONTINUE";
+        }
+        return club->stage() == domain::ClubStage::Complete ? "SEE STANDINGS" : "MIX IT UP";
+    }
+
+    // CONTINUE on the summary: a club round carries on to the mix or the
+    // standings, an ordinary match ends on the complete screen.
+    void advance_past_summary() {
+        if (!club_active) {
+            model.screen = ui::Screen::MatchComplete;
+            return;
+        }
+        model.screen = club->stage() == domain::ClubStage::Set2 ? ui::Screen::ClubMix
+                                                                : ui::Screen::ClubStandings;
+    }
+
     // --- Radio inbound -------------------------------------------------------
     void handle_frame(const RxFrame& frame) {
         const auto type =
@@ -514,6 +547,9 @@ struct CourtApp {
                 abandon_club_round();
                 model.screen = ui::Screen::Setup;
                 break;
+            case Type::SummaryContinue:
+                advance_past_summary();
+                break;
             case Type::ShowScreen:
                 model.screen = command.screen;
                 break;
@@ -562,10 +598,11 @@ struct CourtApp {
                                                      command.club_players[i].name,
                                                      command.club_players[i].guest};
                 }
-                const auto error = club->start_round(players, esp_random());
+                const auto error = club->start_round(players, esp_random(),
+                                                     ui::crown_pairs(command.club_players));
                 if (error == application::ClubController::StartError::ForbiddenPair) {
                     club_hint =
-                        "Last round's Top 2 can't be teammates - put them on opposite sides";
+                        "Crowned pairs can't be teammates - put them on opposite sides";
                     break;
                 }
                 if (error == application::ClubController::StartError::DuplicatePlayer) {
@@ -670,17 +707,23 @@ struct CourtApp {
         if (state.lifecycle == domain::MatchLifecycle::Completed &&
             prev_lifecycle != domain::MatchLifecycle::Completed &&
             model.screen == ui::Screen::Live) {
+            // The finished mini-set feeds the club round; CONTINUE on the
+            // summary then moves on to the mix or the standings.
             if (club_active) {
-                // The finished mini-set feeds the club round; flow continues
-                // on the mix or standings screen.
                 club->on_set_complete(state);
-                model.screen = club->stage() == domain::ClubStage::Set2
-                                   ? ui::Screen::ClubMix
-                                   : ui::Screen::ClubStandings;
-            } else {
-                model.screen = ui::Screen::MatchComplete;
             }
+            model.screen = ui::Screen::MatchSummary;
             beep(400);
+        } else if (prev_lifecycle == domain::MatchLifecycle::Completed &&
+                   state.lifecycle != domain::MatchLifecycle::Completed &&
+                   ui::is_post_match_screen(model.screen)) {
+            // An undo took the winning point back: walk the whole flow back
+            // to the live screen, club round included.
+            if (club_active) {
+                club->undo_last_set();
+            }
+            model.screen = ui::Screen::Live;
+            ESP_LOGI(TAG, "undo reopened the match");
         }
         prev_lifecycle = state.lifecycle;
 
@@ -692,8 +735,11 @@ struct CourtApp {
         if (storage_degraded) {
             model.live.storage_fault = true;
         }
-        model.complete = ui::build_complete_model(
-            *service, settings, match_started_ms > 0 ? now - match_started_ms : 0);
+        const std::uint64_t match_duration_ms =
+            match_started_ms > 0 ? now - match_started_ms : 0;
+        model.complete = ui::build_complete_model(*service, settings, match_duration_ms);
+        model.summary = ui::build_summary_model(*service, settings, match_duration_ms,
+                                                summary_title(), summary_continue_label());
         model.club = ui::build_club_model(*roster, *club, club_hint);
         model.club.suggested_a = club_suggested_a;
         model.club.suggested_b = club_suggested_b;
@@ -741,6 +787,7 @@ ui::UiCallbacks make_callbacks() {
     };
     cb.reset_confirmed = []() { push_command({.type = AppCommand::Type::ResetConfirmed}); };
     cb.new_match = []() { push_command({.type = AppCommand::Type::NewMatch}); };
+    cb.summary_continue = []() { push_command({.type = AppCommand::Type::SummaryContinue}); };
     cb.show_screen = [](ui::Screen screen) {
         push_command({.type = AppCommand::Type::ShowScreen, .screen = screen});
     };

@@ -75,14 +75,17 @@ FeedbackPattern feedback_for(protocol::AckStatus status);
 // --- Core ---------------------------------------------------------------------
 
 struct RemoteCoreConfig {
-    // Debounce (spec 11.2 initial parameters; tunable).
-    std::uint32_t stable_press_ms = 30;
+    // Debounce (spec 11.2 initial parameters; tunable). The press threshold
+    // is long enough that a shirt brushing the button on the way past does
+    // not score — a deliberate press has to hold it down.
+    std::uint32_t stable_press_ms = 150;
     std::uint32_t stable_release_ms = 30;
     std::uint32_t retrigger_guard_ms = 700;
-    // Hold-to-undo (ADR-0014). Holding this long while paired takes the
-    // team's own last point back instead of scoring, so the award intent is
-    // sent on release rather than on press. Must stay below pairing_hold_ms.
-    std::uint32_t undo_hold_ms = 3000;
+    // Hold-to-undo (ADR-0014). Holding this long while paired takes the last
+    // point back instead of scoring, so the award intent is sent on release
+    // rather than on press. Must stay above stable_press_ms (otherwise no
+    // press could ever score) and below pairing_hold_ms.
+    std::uint32_t undo_hold_ms = 1500;
     // Retry policy (docs/RADIO_PROTOCOL.md).
     std::uint32_t ack_timeout_ms = 450;
     std::uint8_t max_attempts = 5;

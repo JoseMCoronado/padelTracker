@@ -127,9 +127,10 @@ idf.py -p PORT flash monitor
 
 All five lamps chase at boot, then each press logs its bounce in microseconds.
 Give every button ~20 presses and one 5-second hold, then tap BOOT for the
-summary. The last line is the verdict: if it warns that bounce reached 30 ms,
-raise `stable_press_ms` in `components/remote_core` and the 30 ms in
-`WiredButton` (`firmware/court-display/main/main.cpp`) before going further.
+summary. The last line is the verdict: if it warns that bounce reached the
+150 ms press threshold, raise `stable_press_ms` in `components/remote_core` and
+`kWiredButtonPressMs` (`firmware/court-display/main/main.cpp`) before going
+further.
 Record the numbers in [HARDWARE_PINOUT.md](HARDWARE_PINOUT.md).
 
 ## Step 5 — Wire the extras to the court unit (separate session)
@@ -167,7 +168,11 @@ point, and the lamp gives the feedback pattern. Worth checking by hand: a
 double-tap inside 700 ms scores once, and two remotes pressed together raise
 the conflict prompt.
 
-Holding the button 3 s takes that team's own last point back again (ADR-0014),
-which the court confirms with a long 500 ms beep. Two things to try: hold after
-the *other* team scored — it should be refused and leave the score alone — and
+Holding the button 1.5 s takes the last point back again (ADR-0014), whichever
+team scored it, which the court confirms with a long 500 ms beep. Two things to
+try: hold after the *other* team scored — that point should come off too — and
 hold for ten seconds straight, which must still only remove one point.
+
+While you are here, check the press threshold from the same session: a quick
+brush across the button should score nothing, and a normal press should feel
+instant. That is the 150 ms of contact a press now needs (ADR-0016).

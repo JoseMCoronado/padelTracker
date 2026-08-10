@@ -86,8 +86,10 @@ struct Fixture {
         }
     }
 
-    // A clean debounced press-and-release.
-    void press(std::uint32_t hold_ms = 60) {
+    // A clean debounced press-and-release. The default clears
+    // stable_press_ms (150) with room to spare and stays well under
+    // undo_hold_ms (1500).
+    void press(std::uint32_t hold_ms = 250) {
         core.set_button_level(true);
         run(hold_ms);
         core.set_button_level(false);
@@ -117,7 +119,7 @@ RemoteCoreConfig sleep_config() {
 
 TEST_CASE("switch bounce does not register a press") {
     Fixture f;
-    // 10 ms blips, well under the 30 ms stability requirement.
+    // 10 ms blips, well under the 150 ms stability requirement.
     for (int i = 0; i < 5; ++i) {
         f.core.set_button_level(true);
         f.run(10);
@@ -128,10 +130,31 @@ TEST_CASE("switch bounce does not register a press") {
     CHECK(f.radio.sent.empty());
 }
 
+TEST_CASE("a shirt brushing the button does not score") {
+    // What the first on-court session produced: contact long enough to clear
+    // the old 30 ms threshold, short enough that nobody meant to press.
+    for (const std::uint32_t brush_ms : {30u, 60u, 100u, 140u}) {
+        Fixture f;
+        INFO("brush length: " << brush_ms << " ms");
+        f.press(brush_ms);
+        CHECK(f.core.stats().presses == 0);
+        CHECK(f.radio.sent.empty());
+        CHECK(f.feedback.count(FeedbackPattern::PressRegistered) == 0);
+    }
+}
+
+TEST_CASE("a deliberate press past the threshold still scores") {
+    Fixture f;
+    f.press(200);
+    CHECK(f.core.stats().presses == 1);
+    REQUIRE(f.radio.sent.size() == 1);
+    CHECK(f.radio.sent.front().action == protocol::Action::AwardPoint);
+}
+
 TEST_CASE("one stable press = one intent; hold below the undo threshold still one point") {
     Fixture f;
     f.core.set_button_level(true);
-    f.run(2000);  // long hold, still short of undo_hold_ms
+    f.run(1200);  // long hold, still short of undo_hold_ms
     f.core.set_button_level(false);
     f.run(60);
     CHECK(f.core.stats().presses == 1);
@@ -163,7 +186,7 @@ TEST_CASE("the point intent is sent on release, not while the button is down") {
 TEST_CASE("holding past the undo threshold sends an undo instead of a point") {
     Fixture f;
     f.core.set_button_level(true);
-    f.run(3100);
+    f.run(1600);
     REQUIRE(f.radio.sent.size() == 1);
     CHECK(f.radio.sent.front().action == protocol::Action::UndoLastPoint);
     CHECK(f.radio.sent.front().team == TeamId::A);
@@ -190,14 +213,14 @@ TEST_CASE("one hold undoes exactly once no matter how long it is held") {
 TEST_CASE("a second undo needs a fresh press") {
     Fixture f;
     f.core.set_button_level(true);
-    f.run(3100);
+    f.run(1600);
     REQUIRE(f.core.stats().undos_sent == 1);
     f.core.on_ack(f.ack_for(f.radio.sent.back(), protocol::AckStatus::Accepted));
     f.core.set_button_level(false);
     f.run(800);  // clear the retrigger guard
 
     f.core.set_button_level(true);
-    f.run(3100);
+    f.run(1600);
     CHECK(f.core.stats().undos_sent == 2);
 }
 
@@ -215,8 +238,8 @@ TEST_CASE("an unpaired hold pairs and never sends an undo") {
 
 TEST_CASE("double tap inside the retrigger guard is suppressed") {
     Fixture f;
-    f.press(60);   // t ~ +120ms
-    f.press(60);   // second press well inside the 700 ms guard
+    f.press(200);
+    f.press(200);  // second press well inside the 700 ms guard
     CHECK(f.core.stats().presses == 1);
     CHECK(f.core.stats().presses_suppressed >= 1);
     CHECK(f.core.stats().intents_sent == 1);
@@ -320,9 +343,9 @@ TEST_CASE("sequence baseline is persisted write-ahead and survives reboot") {
     rebooted.begin(0xB007'1D02);
     f.radio.sent.clear();
     rebooted.set_button_level(true);
-    f.run(60);
-    // poll() drives the rebooted core's debounce via the fixture clock.
-    for (int i = 0; i < 20; ++i) {
+    // poll() drives the rebooted core's debounce via the fixture clock; the
+    // press has to outlast stable_press_ms before the release can score.
+    for (int i = 0; i < 50; ++i) {
         f.clock.advance(5);
         rebooted.poll();
     }
@@ -397,7 +420,7 @@ TEST_CASE("baseline is only rewritten when the chunk is exhausted") {
     Fixture f;
     const int initial_saves = f.store.saves;
     for (int i = 0; i < 10; ++i) {
-        f.press(60);
+        f.press(200);
         f.core.on_ack(f.ack_for(f.radio.sent.back(), protocol::AckStatus::Accepted));
         f.run(700);  // clear the guard
     }

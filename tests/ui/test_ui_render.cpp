@@ -138,8 +138,15 @@ ui::UiModel stress_model(ui::Screen screen) {
     m.live.special_label = "GOLDEN POINT";
     m.live.team_a = a;
     m.live.team_b = b;
-    m.live.set_history = "7-6(5)  4-6  |  current 5-6";
-    m.live.serving_label = "Serving: CLUB DEPORTIVO LOS GUERREROS";
+    m.live.scoreboard.name_a = "MAXIMILIANO ALEJANDRO / SEBASTIAN RODRIGUEZ";
+    m.live.scoreboard.name_b = "CLUB DEPORTIVO LOS GUERREROS DEL PADEL 2026";
+    m.live.scoreboard.serving = TeamId::A;
+    // Five sets is the longest board the domain can produce.
+    m.live.scoreboard.columns = {{"7", "6", "", "(5)", false, TeamId::A},
+                                 {"4", "6", "", "", false, TeamId::B},
+                                 {"6", "7", "(9)", "", false, TeamId::B},
+                                 {"6", "4", "", "", false, TeamId::A},
+                                 {"5", "6", "", "", true, std::nullopt}};
     m.live.conflict = true;
     m.live.storage_fault = true;
     m.live.radio_ok = false;
@@ -148,6 +155,17 @@ ui::UiModel stress_model(ui::Screen screen) {
     m.complete.winner_label = "CLUB DEPORTIVO LOS GUERREROS DEL PADEL 2026 WINS";
     m.complete.final_score = "7-6(5)  4-6  7-5";
     m.complete.duration_label = "Duration: 96 min";
+
+    m.summary.title = "CLUB SET 1 COMPLETE";
+    m.summary.winner_label = "CLUB DEPORTIVO LOS GUERREROS DEL PADEL 2026 WIN";
+    m.summary.scoreboard = m.live.scoreboard;
+    m.summary.scoreboard.serving.reset();
+    m.summary.stats = {{"Duration", "96 min"},
+                       {"Points played", "184"},
+                       {"MAXIMILIANO ALEJANDRO / SEBASTIAN RODRIGUEZ", "97  (53%)"},
+                       {"CLUB DEPORTIVO LOS GUERREROS DEL PADEL 2026", "87  (47%)"},
+                       {"Best run - MAXIMILIANO ALEJANDRO / SEBASTIAN RODRIGUEZ", "7 in a row"}};
+    m.summary.continue_label = "MIX IT UP";
 
     m.pairing.team_label = "Pairing: TEAM A";
     m.pairing.instruction = "Hold the remote button for 5 seconds to enter pairing mode.";
@@ -187,10 +205,11 @@ ui::UiModel stress_model(ui::Screen screen) {
 }  // namespace
 
 TEST_CASE("every screen renders at 1024x600 with stress content, labels in bounds") {
-    const ui::Screen screens[] = {ui::Screen::Setup,        ui::Screen::Live,
-                                  ui::Screen::MatchComplete, ui::Screen::Pairing,
-                                  ui::Screen::Diagnostics,   ui::Screen::Recovery,
-                                  ui::Screen::ClubMix,       ui::Screen::ClubStandings};
+    const ui::Screen screens[] = {ui::Screen::Setup,         ui::Screen::Live,
+                                  ui::Screen::MatchSummary,  ui::Screen::MatchComplete,
+                                  ui::Screen::Pairing,       ui::Screen::Diagnostics,
+                                  ui::Screen::Recovery,      ui::Screen::ClubMix,
+                                  ui::Screen::ClubStandings};
     for (const ui::Screen screen : screens) {
         INFO("screen index: " << static_cast<int>(screen));
         court_ui().render(stress_model(screen));
@@ -286,18 +305,33 @@ TEST_CASE("tapping a roster tile selects the player despite continuous re-render
             court_ui().render(m);
         }
     };
-    s_pointer.pressed = true;
-    pump();
-    s_pointer.pressed = false;
-    pump();
+    const auto tap = [&] {
+        s_pointer.pressed = true;
+        pump();
+        s_pointer.pressed = false;
+        pump();
+    };
+    // Long enough that the next tap is a separate pick, not a double tap.
+    const auto idle = [&] {
+        for (int i = 0; i < 10; ++i) {
+            lv_tick_inc(100);
+            lv_timer_handler();
+            court_ui().render(m);
+        }
+    };
 
+    tap();
     CHECK(find_label("1 / 2 picked") != nullptr);
 
-    // Tap again: deselects.
-    s_pointer.pressed = true;
-    pump();
-    s_pointer.pressed = false;
-    pump();
+    // A second tap right away is a double tap: the player keeps their place
+    // and picks up crown 1 instead of being deselected.
+    tap();
+    CHECK(find_label("1 / 2 picked") != nullptr);
+    CHECK(find_label("LEWIS [1]  (pick 1 more)") != nullptr);
+
+    // Slow tap: deselects.
+    idle();
+    tap();
     CHECK(find_label("0 / 2 picked") != nullptr);
 }
 

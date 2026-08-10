@@ -246,7 +246,8 @@ void RemoteCore::poll() {
         enter_pairing_mode();
     }
 
-    // Hold while paired takes the team's own last point back (ADR-0014).
+    // Hold while paired takes the last point back, whichever team scored it
+    // (ADR-0014).
     // Once per hold: a second undo needs a fresh press.
     if (settings_.paired && stable_level_ && press_armed_ &&
         now - press_started_ms_ >= config_.undo_hold_ms) {
@@ -262,7 +263,11 @@ void RemoteCore::poll() {
         if (now - level_since_ms_ >= required) {
             stable_level_ = raw_level_;
             if (stable_level_) {
-                press_started_ms_ = now;
+                // Time the hold from when the finger actually landed, not
+                // from when the debounce believed it: the undo and pairing
+                // gestures are what the player counts out loud, and they
+                // must not stretch when stable_press_ms is tuned up.
+                press_started_ms_ = level_since_ms_;
                 on_debounced_press();
             } else {
                 on_debounced_release(now);

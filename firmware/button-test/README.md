@@ -2,11 +2,11 @@
 
 Validates the illuminated arcade buttons — switches and 5V lamps — on a spare
 DevKit, and measures the **contact bounce** the product firmware's debounce
-constants assume: `stable_press_ms = 30` in
-`components/remote_core/include/padel/remote/remote_core.hpp` and the hardcoded
-30 ms in `WiredButton` in `firmware/court-display/main/main.cpp`. Those numbers
-were chosen on paper; this app is how they get checked against the real
-switches.
+constants assume: `stable_press_ms = 150` in
+`components/remote_core/include/padel/remote/remote_core.hpp` and the matching
+`kWiredButtonPressMs` in `firmware/court-display/main/main.cpp`. Those numbers
+were chosen from a first bench run and a court session (ADR-0016); this app is
+how they get checked against the real switches.
 
 Edges are timestamped in a GPIO ISR, so a bounce burst resolves to microseconds
 instead of to the 5–10 ms poll interval the product firmware runs at.
@@ -80,7 +80,7 @@ buttontest: button 2 (GPIO5): release after 214 ms, bounce 640 us over 3 edges
 buttontest: === summary at 63 s ===
 buttontest:  btn gpio  press  relse glitch  maxBounce  avgBounce  edges  minHold  maxHold
 buttontest:    1    4     20     20      0     2100 us     890 us      7       98     5210
-buttontest: verdict: worst bounce 2100 us, 0 glitches - the 30 ms firmware debounce holds
+buttontest: verdict: worst bounce 2100 us, 0 glitches - the 150 ms firmware debounce holds
 ```
 
 BOOT held for 2 s clears the counters, so you can take a clean run of, say, 50
@@ -90,9 +90,13 @@ presses per button.
 
 - Every button: presses == releases == the number of times you actually pressed
   it, zero glitches.
-- Worst bounce comfortably under 30 ms. If the verdict warns, raise
-  `stable_press_ms` / `stable_release_ms` in `RemoteCoreConfig` and the 30 ms in
-  `WiredButton` to match the measurement before trusting the switches.
+- Worst bounce comfortably under 150 ms. If the verdict warns, raise
+  `stable_press_ms` in `RemoteCoreConfig` and `kWiredButtonPressMs` in
+  court-display to match the measurement before trusting the switches — but
+  note the ceiling: a press threshold above `undo_hold_ms` (1500 ms) would make
+  scoring impossible.
+- Minimum hold: deliberate presses should read 190 ms or more in the `minHold`
+  column. Anything shorter would be rejected by the 150 ms press threshold.
 - Hold one button for 5+ seconds: no release logged in the middle. The pairing
   flow depends on it (`RemoteCoreConfig::pairing_hold_ms = 5000`).
 - All five lamps light in the boot chase and then track their own button.

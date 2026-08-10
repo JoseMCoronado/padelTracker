@@ -183,11 +183,76 @@ TEST_CASE("full round: labels, mix, standings, results log") {
     CHECK_FALSE(standings[2].top2);
     CHECK(controller.coin_flip_announcement().empty());
 
+    // The log is written when the organizer closes the round, not the moment
+    // set 2 lands: until then an undo can still reopen it.
+    CHECK(log.rows.empty());
+    controller.finish_round();
+
     REQUIRE(log.rows.size() == 4);
     CHECK(log.rows[0].player_name == "Adrien");
     CHECK(log.rows[0].top2);
     CHECK(log.rows[0].timestamp_ms == 777);
     CHECK(log.rows[3].wins == 0);
+}
+
+TEST_CASE("an undo reopens set 2 and the results log is still written once") {
+    MemoryRosterStore store;
+    MemoryResultsLog log;
+    FakeClock clock;
+    PlayerRoster roster(store);
+    ClubController controller(log, clock);
+
+    REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
+    controller.on_set_complete(completed_set(TeamId::A, 0));
+    controller.on_set_complete(completed_set(TeamId::A, 2));
+    REQUIRE(controller.stage() == domain::ClubStage::Complete);
+
+    // The court display undoes the winning point: set 2 goes back into play.
+    REQUIRE(controller.undo_last_set());
+    CHECK(controller.stage() == domain::ClubStage::Set2);
+    CHECK(controller.set_number() == 2);
+    CHECK(controller.last_set_summary() == "ADRIEN & LEWIS took set 1 (3-0)");
+    CHECK(log.rows.empty());
+
+    // Replayed to a different result; only the corrected round is logged.
+    controller.on_set_complete(completed_set(TeamId::B, 2));
+    REQUIRE(controller.stage() == domain::ClubStage::Complete);
+    controller.finish_round();
+    CHECK(log.rows.size() == 4);
+}
+
+TEST_CASE("undo walks back through set 1 and stops at the start of the round") {
+    MemoryRosterStore store;
+    MemoryResultsLog log;
+    FakeClock clock;
+    PlayerRoster roster(store);
+    ClubController controller(log, clock);
+
+    REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
+    CHECK_FALSE(controller.undo_last_set());  // nothing recorded yet
+
+    controller.on_set_complete(completed_set(TeamId::A, 0));
+    REQUIRE(controller.undo_last_set());
+    CHECK(controller.stage() == domain::ClubStage::Set1);
+    CHECK(controller.last_set_summary().empty());
+    CHECK(controller.current_set_teams().team_a == "ADRIEN & LEWIS");
+}
+
+TEST_CASE("crowned players cannot be teammates even when they never were Top 2") {
+    MemoryRosterStore store;
+    MemoryResultsLog log;
+    FakeClock clock;
+    PlayerRoster roster(store);
+    ClubController controller(log, clock);
+
+    const auto players = four_players(roster);  // Adrien&Lewis vs Louis&Luigi
+    const ClubController::ForbiddenPair crown{players[0].id, players[1].id};
+    CHECK(controller.start_round(players, 0, {crown}) ==
+          ClubController::StartError::ForbiddenPair);
+
+    // Split across the teams and the round starts.
+    const std::array<Player, 4> split{players[0], players[2], players[1], players[3]};
+    CHECK_FALSE(controller.start_round(split, 0, {crown}).has_value());
 }
 
 TEST_CASE("tied differential announces the coin flip") {
@@ -208,6 +273,7 @@ TEST_CASE("tied differential announces the coin flip") {
     CHECK(announcement.rfind("COIN FLIP: ", 0) == 0);
     CHECK(announcement.find("takes the last TOP 2 spot") != std::string::npos);
 
+    controller.finish_round();
     int flip_rows = 0;
     for (const auto& row : log.rows) {
         flip_rows += row.decided_by_coin_flip ? 1 : 0;

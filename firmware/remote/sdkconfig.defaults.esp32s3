@@ -7,3 +7,9 @@
 # main/Kconfig.projbuild + the tracked sdkconfig.
 CONFIG_PADEL_REMOTE_BUTTON_GPIO=4
 CONFIG_PADEL_REMOTE_LED_GPIO=16
+
+# Deep sleep is off on the stand-in. The wake path in main.cpp is the RISC-V
+# GPIO one, which the S3 does not have — it would need ext1 and an RTC-capable
+# pin. Sleep is a XIAO behaviour and is verified there (ADR-0015); the bench
+# board only has to click.
+CONFIG_PADEL_REMOTE_SLEEP_ENABLE=n

@@ -294,7 +294,7 @@ void CourtService::handle_point_intent(const protocol::PointIntentPacket& packet
     }
 
     if (packet.action == protocol::Action::UndoLastPoint) {
-        handle_undo_intent(intent, packet.team);
+        handle_undo_intent(intent);
         return;
     }
 
@@ -360,7 +360,7 @@ void CourtService::handle_point_intent(const protocol::PointIntentPacket& packet
                             clock_.now_ms() + config_.conflict_window_ms};
 }
 
-void CourtService::handle_undo_intent(const protocol::IntentIdentity& intent, TeamId team) {
+void CourtService::handle_undo_intent(const protocol::IntentIdentity& intent) {
     // While a press is parked or a conflict is unresolved, the score the
     // player is reacting to is not settled yet; taking a point back now would
     // race the commit that is about to land.
@@ -373,7 +373,9 @@ void CourtService::handle_undo_intent(const protocol::IntentIdentity& intent, Te
         return;
     }
 
-    const auto result = undo_last_scoring_action(team, InputSource::Remote);
+    // Either remote takes back the last point whoever scored it: on court
+    // nobody wants to work out which button owns the mistake.
+    const auto result = undo_last_scoring_action(std::nullopt, InputSource::Remote);
     if (!result) {
         ++counters_.rejected;
         enqueue_ack(intent, result.error() == ServiceError::StorageFailure

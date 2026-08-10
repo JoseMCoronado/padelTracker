@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "padel/common/ids.hpp"
@@ -13,6 +14,7 @@ namespace padel::ui {
 enum class Screen : std::uint8_t {
     Setup,
     Live,
+    MatchSummary,   // read the match back before the flow moves on
     MatchComplete,
     Pairing,
     Diagnostics,
@@ -20,6 +22,13 @@ enum class Screen : std::uint8_t {
     ClubMix,        // between club mini-sets: announce the mixed teams
     ClubStandings,  // after set 2: standings, top2/bottom2, coin flip
 };
+
+// Screens the flow reaches only after a match has finished. An undo that
+// takes the winning point back has to walk all of them back to Live.
+constexpr bool is_post_match_screen(Screen screen) {
+    return screen == Screen::MatchSummary || screen == Screen::MatchComplete ||
+           screen == Screen::ClubMix || screen == Screen::ClubStandings;
+}
 
 // Organizer-editable match settings (setup screen, spec 14.4). Lives in the
 // UI host; the scoring preset index maps to domain presets.
@@ -53,6 +62,25 @@ struct TeamPanelModel {
     bool remote_ok = false;    // assigned and seen recently
 };
 
+// One set column of the broadcast-style scoreboard, laid out like the pro
+// tour overlays: a games digit per team, the loser's tiebreak points in
+// brackets, the set in progress highlighted.
+struct ScoreColumn {
+    std::string games_a;
+    std::string games_b;
+    std::string tiebreak_a;   // "(5)" or ""
+    std::string tiebreak_b;
+    bool current = false;
+    std::optional<TeamId> won{};
+};
+
+struct ScoreboardModel {
+    std::string name_a;                // short pair label, e.g. "TRIAY / BREA"
+    std::string name_b;
+    std::vector<ScoreColumn> columns;  // completed sets, set in progress last
+    std::optional<TeamId> serving{};
+};
+
 struct LiveViewModel {
     std::string court_label;
     std::string mode_label;      // "STANDARD / ADV", "GOLDEN POINT", ...
@@ -60,8 +88,7 @@ struct LiveViewModel {
     std::string special_label;   // "DEUCE", "GOLDEN POINT", "TIEBREAK", ""
     TeamPanelModel team_a;
     TeamPanelModel team_b;
-    std::string set_history;     // "Set history: 6-4 | current 4-3"
-    std::string serving_label;   // "Serving: TEAM A" or ""
+    ScoreboardModel scoreboard;
     bool radio_ok = true;
     bool storage_fault = false;
     bool conflict = false;       // BOTH TEAMS PRESSED banner
@@ -76,6 +103,17 @@ struct CompleteViewModel {
     std::string winner_label;    // "TEAM A WINS"
     std::string final_score;     // "6-4  7-6(5)"
     std::string duration_label;  // "Duration: 52 min" or ""
+};
+
+// Read the match back before the flow moves on (club mix, standings, or the
+// ordinary match-complete screen).
+struct SummaryViewModel {
+    std::string title;           // "SET 1 COMPLETE" / "MATCH COMPLETE"
+    std::string winner_label;    // "JOSE & ZOE WIN"
+    ScoreboardModel scoreboard;  // final set-by-set, same widget as live
+    // Ordered label/value stat rows: duration, points won, longest streak.
+    std::vector<std::pair<std::string, std::string>> stats;
+    std::string continue_label = "CONTINUE";
 };
 
 struct PairingViewModel {
@@ -106,7 +144,14 @@ struct ClubPlayer {
     std::uint32_t id = 0;
     std::string name;
     bool guest = false;
+    // Crown group, 0 = none. Two players wearing the same crown were a Top 2
+    // together and can never be teammates this round (rotation sheet rule).
+    // A court needs two groups: the pair that stayed and the pair that came
+    // up from the court below.
+    std::uint8_t crown = 0;
 };
+
+inline constexpr std::uint8_t kMaxCrownGroups = 2;
 
 struct ClubStandingRowModel {
     std::string rank;    // "1".."4"
@@ -141,6 +186,7 @@ struct UiModel {
     Screen screen = Screen::Setup;
     MatchSettings settings{};
     LiveViewModel live{};
+    SummaryViewModel summary{};
     CompleteViewModel complete{};
     PairingViewModel pairing{};
     DiagnosticsViewModel diagnostics{};

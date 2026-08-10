@@ -20,7 +20,7 @@ namespace padel::application {
 class ClubController {
 public:
     enum class StartError {
-        ForbiddenPair,  // previous round's Top 2 picked as teammates
+        ForbiddenPair,  // a barred pair (previous Top 2 or a crown) as teammates
         RoundActive,
         DuplicatePlayer,
     };
@@ -37,12 +37,19 @@ public:
         bool top2 = false;
     };
 
+    // Two players who must never be teammates this round, by player id.
+    using ForbiddenPair = std::array<std::uint32_t, 2>;
+
     ClubController(IResultsLog& results, const IClock& clock);
 
     // players = {teamA[0], teamA[1], teamB[0], teamB[1]} from the picker.
     // coin_seed feeds the automatic tie-break flip; hosts pass randomness.
+    // crowned carries the pairs the organizer marked in the picker (the Top 2
+    // that came up from another court); the previous round's own Top 2 is
+    // added automatically. Both are kept apart in set 1 and in the mix.
     std::optional<StartError> start_round(const std::array<Player, 4>& players,
-                                          std::uint32_t coin_seed);
+                                          std::uint32_t coin_seed,
+                                          const std::vector<ForbiddenPair>& crowned = {});
 
     bool round_active() const { return round_.has_value(); }
     domain::ClubStage stage() const;
@@ -55,8 +62,12 @@ public:
     const std::string& last_set_summary() const { return last_set_summary_; }
 
     // Feed the completed mini-set. On the second set this finalizes the
-    // round and appends one results-log row per player.
+    // standings; the results log is written by finish_round().
     void on_set_complete(const domain::MatchState& state);
+
+    // Rewinds the most recently recorded mini-set, so an undo that reopens a
+    // finished match on the court display also reopens the round.
+    bool undo_last_set();
 
     // Available once stage() == Complete.
     std::vector<StandingRow> standings() const;
@@ -72,6 +83,10 @@ public:
 
 private:
     std::string label_for(const std::array<std::uint8_t, 2>& slots) const;
+    void write_results_log();
+    // Previous round's Top 2 plus the organizer's crowns, deduplicated and
+    // capped at what ClubRound can carry.
+    std::vector<ForbiddenPair> collect_forbidden(const std::vector<ForbiddenPair>& crowned) const;
 
     IResultsLog& results_;
     const IClock& clock_;
@@ -79,6 +94,8 @@ private:
     std::optional<domain::ClubRound> round_{};
     std::array<Player, 4> players_{};
     std::optional<std::array<std::uint32_t, 2>> forbidden_ids_{};
+    // Index 0 = set 1, index 1 = set 2; last_set_summary() reads the newest.
+    std::array<std::string, 2> set_summaries_{};
     std::string last_set_summary_;
 };
 

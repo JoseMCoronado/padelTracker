@@ -84,14 +84,72 @@ TEST_CASE("sheet round 1 court 3: G&H 3-2, then E&G 3-1 -> top2 G,E") {
     CHECK_FALSE(round.decided_by_coin_flip());
 }
 
-TEST_CASE("sheet round 2 court 2: tied differential resolved by coin flip") {
-    // A&G vs B&E; A&G win 3-2. Mix: A&E vs G&B... sheet plays A&E (2) B&G (3).
-    // Slots: A=0 G=1 (team A picks), B=2 E=3 (team B picks).
-    // Set 1: {0,1} win 3-2. Set 2 mix: {0,2}? winners A,G split: A&B vs G&E
-    //   -> our mix rule: {winner0, loser0} vs {winner1, loser1} = {0,2} vs {1,3}
-    //   = A&B vs G&E. The sheet mixed A&E vs B&G instead — either mix is a
-    //   valid "winners split"; the math below follows our deterministic rule.
-    // Set 2: G&E (team B side) win 3-2.
+TEST_CASE("sheet round 2 court 2: the mix avoids handing the Top 2 back to each other") {
+    // A and B stayed on this court as last round's Top 2, so they can never
+    // partner. Slots: A=0, G=1 (team A picks), B=2, E=3 (team B picks).
+    domain::ClubForbiddenPairs barred{};
+    barred.add(0, 2);  // A & B
+    ClubRound round(0, barred);
+
+    round.record_set_result(TeamId::A, 3, 2);  // A&G take set 1
+    const ClubPairing mix = round.current_pairing();
+    // The default split would be A&B vs G&E, exactly the pair the sheet
+    // forbids, so the round takes the other split: A&E vs B&G.
+    CHECK(pair_is(mix.team_a, 0, 3));
+    CHECK(pair_is(mix.team_b, 1, 2));
+}
+
+TEST_CASE("two barred pairs still leave the mix a legal split") {
+    // A&B stayed, G&E came up together: neither pair may partner.
+    domain::ClubForbiddenPairs barred{};
+    barred.add(0, 2);  // A & B
+    barred.add(1, 3);  // G & E
+    ClubRound round(0, barred);
+
+    round.record_set_result(TeamId::A, 3, 2);
+    const ClubPairing mix = round.current_pairing();
+    CHECK(pair_is(mix.team_a, 0, 3));  // A & E
+    CHECK(pair_is(mix.team_b, 1, 2));  // G & B
+}
+
+TEST_CASE("undo_last_set_result rewinds one set at a time") {
+    ClubRound round;
+    CHECK_FALSE(round.undo_last_set_result());  // nothing recorded yet
+
+    round.record_set_result(TeamId::A, 3, 0);
+    round.record_set_result(TeamId::A, 3, 2);
+    REQUIRE(round.stage() == ClubStage::Complete);
+
+    REQUIRE(round.undo_last_set_result());
+    CHECK(round.stage() == ClubStage::Set2);
+    // Set 1 survived, so the mix is unchanged and set 2 can be replayed.
+    const ClubPairing mix = round.current_pairing();
+    CHECK(pair_is(mix.team_a, 0, 2));
+    CHECK(pair_is(mix.team_b, 1, 3));
+
+    REQUIRE(round.undo_last_set_result());
+    CHECK(round.stage() == ClubStage::Set1);
+    CHECK_FALSE(round.undo_last_set_result());
+}
+
+TEST_CASE("a replayed set 2 produces the standings of the replay, not the undone set") {
+    ClubRound round;
+    round.record_set_result(TeamId::A, 3, 0);
+    round.record_set_result(TeamId::A, 3, 2);  // A&C over B&D
+    REQUIRE(pair_is(round.top2(), 0, 1));
+
+    REQUIRE(round.undo_last_set_result());
+    round.record_set_result(TeamId::B, 3, 0);  // B&D over A&C instead
+    REQUIRE(round.stage() == ClubStage::Complete);
+    // B now has 2 wins; A dropped to one.
+    CHECK(round.standings()[0].slot == 1);
+    CHECK(round.standings()[0].wins == 2);
+}
+
+TEST_CASE("tied differential resolved by coin flip") {
+    // Set 1: {0,1} win 3-2. Set 2 mix: {0,2} vs {1,3}, and {1,3} win 3-2.
+    // Wins: slot 1 = 2. Slot 0: +1-1=0, 1 win. Slot 3: -1+1=0, 1 win.
+    // Slots 0 and 3 tie on differential -> automatic coin flip.
     // Wins: G=2. A: +1-1=0, 1 win. E: -1+1=0, 1 win. B: 0 wins.
     // A and E tie on differential -> automatic coin flip.
     ClubRound heads(0);  // seed & 1 == 0: first-ranked tied slot keeps the spot

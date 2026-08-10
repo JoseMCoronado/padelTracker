@@ -16,6 +16,17 @@ config PADEL_REMOTE_BUTTON_GPIO
         D1 on the XIAO ESP32-C3. Verify against docs/HARDWARE_PINOUT.md on
         bring-up day.
 
+config PADEL_REMOTE_PRESS_MS
+    int "Press debounce / minimum press (ms)"
+    range 30 600
+    default 150
+    help
+        How long the button must stay down before the press counts. The
+        default 150 ms rejects the accidental brushes players produce with a
+        shirt or a racket while still feeling instant on a deliberate press.
+        Raise it if a court still records phantom points; the undo hold
+        (1500 ms) puts the ceiling on how far this can go.
+
 config PADEL_REMOTE_LED_GPIO
     int "Feedback LED GPIO"
     default 10

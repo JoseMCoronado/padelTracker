@@ -32,6 +32,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "soc/soc_caps.h"
 
 #include "padel/protocol/packets.hpp"
 #include "padel/remote/remote_core.hpp"
@@ -264,6 +265,11 @@ void init_button() {
 // docs/HARDWARE_PINOUT.md. The internal pull-up is applied by
 // esp_deep_sleep_start itself, so the active-low button needs no external
 // resistor.
+#if !SOC_DEEP_SLEEP_SUPPORTED || !SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
+#error \
+    "This wake path is the RISC-V GPIO one the XIAO C3 uses; an S3 DevKit stand-in " \
+    "has to wake through ext1 instead. Build with CONFIG_PADEL_REMOTE_SLEEP_ENABLE=n."
+#endif
 static_assert(CONFIG_PADEL_REMOTE_BUTTON_GPIO >= 0 && CONFIG_PADEL_REMOTE_BUTTON_GPIO <= 5,
               "Deep sleep wake on the ESP32-C3 only works on GPIO0-5; pick a wake-capable "
               "button pin or disable CONFIG_PADEL_REMOTE_SLEEP_ENABLE");
@@ -318,6 +324,7 @@ extern "C" void app_main(void) {
                                (static_cast<uint32_t>(mac[4]) << 8) | mac[5];
 
     padel::remote::RemoteCoreConfig core_config{};
+    core_config.stable_press_ms = static_cast<std::uint32_t>(CONFIG_PADEL_REMOTE_PRESS_MS);
 #if CONFIG_PADEL_REMOTE_SLEEP_ENABLE
     core_config.inactivity_sleep_ms =
         static_cast<std::uint32_t>(CONFIG_PADEL_REMOTE_SLEEP_TIMEOUT_S) * 1000u;

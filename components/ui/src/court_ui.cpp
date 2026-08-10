@@ -18,6 +18,7 @@ void CourtUi::create(UiCallbacks callbacks) {
     s.shared.callbacks = std::move(callbacks);
     s.live.create(&s.shared);
     s.setup.create(&s.shared);
+    s.summary.create(&s.shared);
     s.complete.create(&s.shared);
     s.pairing.create(&s.shared);
     s.diagnostics.create(&s.shared);
@@ -59,6 +60,7 @@ void CourtUi::render(const UiModel& model) {
         switch (model.screen) {
             case Screen::Setup: root = s.setup.root; break;
             case Screen::Live: root = s.live.root; break;
+            case Screen::MatchSummary: root = s.summary.root; break;
             case Screen::MatchComplete: root = s.complete.root; break;
             case Screen::Pairing: root = s.pairing.root; break;
             case Screen::Diagnostics: root = s.diagnostics.root; break;
@@ -76,6 +78,9 @@ void CourtUi::render(const UiModel& model) {
             break;
         case Screen::Live:
             s.live.update(model.live);
+            break;
+        case Screen::MatchSummary:
+            s.summary.update(model.summary);
             break;
         case Screen::MatchComplete:
             s.complete.update(model.complete);

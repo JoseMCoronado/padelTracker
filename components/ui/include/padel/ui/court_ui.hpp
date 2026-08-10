@@ -21,6 +21,7 @@ struct UiCallbacks {
     std::function<void(const MatchSettings&)> start_match;
     std::function<void()> reset_confirmed;                 // after two-step confirm
     std::function<void()> new_match;                       // complete -> setup
+    std::function<void()> summary_continue;                // summary -> next screen
     std::function<void(Screen)> show_screen;               // navigation request
     std::function<void(TeamId)> begin_pairing;
     std::function<void()> cancel_pairing;

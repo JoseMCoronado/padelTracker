@@ -6,7 +6,7 @@
 // Keys:
 //   a / b          Team A / Team B remote press (RemoteCore + radio path)
 //   A / B (shift)  wired backup button press
-//   1 / 2          Team A / Team B remote hold-to-undo (3 s hold)
+//   1 / 2          Team A / Team B remote hold-to-undo (1.5 s hold)
 //   l              cycle induced packet loss 0% -> 30% -> 60%
 //   p              (on pairing screen) put that team's remote into pairing mode
 //   r              power-cycle the court (journal recovery flow)
@@ -117,9 +117,11 @@ struct SimRemote {
     std::unique_ptr<remote::RemoteCore> core{};
     std::uint64_t release_at_ms = 0;  // scheduled button release
 
+    // Held past RemoteCoreConfig::stable_press_ms so a keypress behaves like
+    // a deliberate press rather than the brush the debounce now rejects.
     void press(std::uint64_t now) {
         core->set_button_level(true);
-        release_at_ms = now + 60;
+        release_at_ms = now + 250;
     }
 
     // Long enough for RemoteCore to turn the hold into an undo (ADR-0014).
@@ -378,6 +380,42 @@ struct App {
         }
     }
 
+    // The summary reads back the mini-set that just finished, so it names the
+    // set the club round has already moved past.
+    std::string summary_title() const {
+        if (!club_active) {
+            return {};
+        }
+        return club->stage() == domain::ClubStage::Complete ? "CLUB SET 2 COMPLETE"
+                                                            : "CLUB SET 1 COMPLETE";
+    }
+
+    std::string summary_continue_label() const {
+        if (!club_active) {
+            return "CONTINUE";
+        }
+        return club->stage() == domain::ClubStage::Complete ? "SEE STANDINGS" : "MIX IT UP";
+    }
+
+    // CONTINUE on the summary: a club round carries on to the mix or the
+    // standings, an ordinary match ends on the complete screen.
+    void advance_past_summary() {
+        if (!club_active) {
+            model.screen = ui::Screen::MatchComplete;
+            return;
+        }
+        if (club->stage() == domain::ClubStage::Set2) {
+            model.screen = ui::Screen::ClubMix;
+            log("club set 1 done -> mix: " + club->current_set_teams().team_a + " vs " +
+                club->current_set_teams().team_b);
+        } else {
+            model.screen = ui::Screen::ClubStandings;
+            if (!club->coin_flip_announcement().empty()) {
+                log(club->coin_flip_announcement());
+            }
+        }
+    }
+
     // --- UI callbacks --------------------------------------------------------
     ui::UiCallbacks callbacks() {
         ui::UiCallbacks cb{};
@@ -429,6 +467,7 @@ struct App {
             abandon_club_round();
             model.screen = ui::Screen::Setup;
         };
+        cb.summary_continue = [this]() { advance_past_summary(); };
         cb.show_screen = [this](ui::Screen screen) { model.screen = screen; };
         cb.begin_pairing = [this](TeamId team) {
             pairing->begin(team);
@@ -482,10 +521,11 @@ struct App {
             for (std::size_t i = 0; i < 4; ++i) {
                 players[i] = application::Player{picked[i].id, picked[i].name, picked[i].guest};
             }
-            const auto error = club->start_round(players, static_cast<std::uint32_t>(rng()));
+            const auto error = club->start_round(players, static_cast<std::uint32_t>(rng()),
+                                                 ui::crown_pairs(picked));
             if (error == application::ClubController::StartError::ForbiddenPair) {
                 club_hint =
-                    "Last round's Top 2 can't be teammates - put them on opposite sides";
+                    "Crowned pairs can't be teammates - put them on opposite sides";
                 log("club round rejected: forbidden pair");
                 return;
             }
@@ -546,11 +586,11 @@ struct App {
                 }
                 break;
             case SDLK_1:
-                remote_a.hold(now, 3200);
+                remote_a.hold(now, 1700);
                 log("remote A: holding to undo");
                 break;
             case SDLK_2:
-                remote_b.hold(now, 3200);
+                remote_b.hold(now, 1700);
                 log("remote B: holding to undo");
                 break;
             case SDLK_l:
@@ -662,19 +702,18 @@ struct App {
             model.screen == ui::Screen::Live) {
             if (club_active) {
                 club->on_set_complete(state);
-                if (club->stage() == domain::ClubStage::Set2) {
-                    model.screen = ui::Screen::ClubMix;
-                    log("club set 1 done -> mix: " + club->current_set_teams().team_a + " vs " +
-                        club->current_set_teams().team_b);
-                } else {
-                    model.screen = ui::Screen::ClubStandings;
-                    if (!club->coin_flip_announcement().empty()) {
-                        log(club->coin_flip_announcement());
-                    }
-                }
-            } else {
-                model.screen = ui::Screen::MatchComplete;
             }
+            model.screen = ui::Screen::MatchSummary;
+        } else if (prev_lifecycle == domain::MatchLifecycle::Completed &&
+                   state.lifecycle != domain::MatchLifecycle::Completed &&
+                   ui::is_post_match_screen(model.screen)) {
+            // An undo took the winning point back: walk the whole flow back
+            // to the live screen, club round included.
+            if (club_active) {
+                club->undo_last_set();
+            }
+            model.screen = ui::Screen::Live;
+            log("undo reopened the match");
         }
         prev_lifecycle = state.lifecycle;
 
@@ -684,8 +723,11 @@ struct App {
         if (now < flash_until_ms) {
             model.live.point_flash = flash_team;
         }
-        model.complete = ui::build_complete_model(
-            *service, settings, match_started_ms > 0 ? now - match_started_ms : 0);
+        const std::uint64_t match_duration_ms =
+            match_started_ms > 0 ? now - match_started_ms : 0;
+        model.complete = ui::build_complete_model(*service, settings, match_duration_ms);
+        model.summary = ui::build_summary_model(*service, settings, match_duration_ms,
+                                                summary_title(), summary_continue_label());
         model.club = ui::build_club_model(*roster, *club, club_hint);
         model.club.suggested_a = club_suggested_a;
         model.club.suggested_b = club_suggested_b;
@@ -776,8 +818,12 @@ int run_tour(App& app, const std::string& out_dir) {
     m.live.court_label = "COURT 12 - CENTER";
     m.live.mode_label = "STANDARD / ADV / MTB";
     m.live.status_label = "LIVE";
-    m.live.set_history = "7-6(5)  4-6  |  current 5-6";
-    m.live.serving_label = "Serving: LOS GUERREROS DEL PADEL";
+    m.live.scoreboard.name_a = "MAXIMILIANO / ALEJANDRO";
+    m.live.scoreboard.name_b = "SEBASTIAN / MAXIMILIANO";
+    m.live.scoreboard.serving = TeamId::A;
+    m.live.scoreboard.columns = {{"7", "6", "", "(5)", false, TeamId::A},
+                                 {"4", "6", "", "", false, TeamId::B},
+                                 {"5", "6", "", "", true, std::nullopt}};
     m.live.special_label = "";
     m.live.radio_ok = true;
     m.live.revision = 214;
@@ -876,6 +922,20 @@ int run_tour(App& app, const std::string& out_dir) {
     m.club.coin_announcement = "COIN FLIP: LEWIS takes the last TOP 2 spot";
     app.court_ui.render(m);
     if (!settle_and_shoot("12-club-standings")) return 1;
+
+    m.screen = ui::Screen::MatchSummary;
+    m.summary.title = "CLUB SET 1 COMPLETE";
+    m.summary.winner_label = "LOS GUERREROS DEL PADEL WIN";
+    m.summary.scoreboard = m.live.scoreboard;
+    m.summary.scoreboard.serving.reset();
+    m.summary.stats = {{"Duration", "96 min"},
+                       {"Points played", "184"},
+                       {"MAXIMILIANO / ALEJANDRO", "97  (53%)"},
+                       {"SEBASTIAN / MAXIMILIANO", "87  (47%)"},
+                       {"Best run - MAXIMILIANO / ALEJANDRO", "7 in a row"}};
+    m.summary.continue_label = "MIX IT UP";
+    app.court_ui.render(m);
+    if (!settle_and_shoot("13-match-summary")) return 1;
 
     return 0;
 }
