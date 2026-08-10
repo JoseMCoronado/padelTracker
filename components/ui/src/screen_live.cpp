@@ -155,12 +155,6 @@ void on_reset(lv_event_t* e) {
     s->open_reset_dialog(1);
 }
 
-void on_diagnostics(lv_event_t* e) {
-    LiveScreen* s = self(e);
-    s->close_organizer_menu();
-    if (s->shared->callbacks.show_screen) s->shared->callbacks.show_screen(Screen::Diagnostics);
-}
-
 void on_conflict_a(lv_event_t* e) {
     if (self(e)->shared->callbacks.resolve_conflict)
         self(e)->shared->callbacks.resolve_conflict(TeamId::A);
@@ -176,38 +170,24 @@ void on_conflict_cancel(lv_event_t* e) {
         self(e)->shared->callbacks.resolve_conflict(std::nullopt);
 }
 
-void on_undo_dialog(lv_event_t* e) {
+void on_dialog_dismiss(lv_event_t* e) { self(e)->close_dialogs(); }
+
+void on_undo_confirm(lv_event_t* e) {
     LiveScreen* s = self(e);
-    lv_obj_t* box = lv_event_get_current_target(e);
-    const char* button = lv_msgbox_get_active_btn_text(box);
-    if (button != nullptr && std::string(button) == "Undo" && s->shared->callbacks.undo_confirmed) {
-        s->shared->callbacks.undo_confirmed();
-    }
-    lv_msgbox_close(box);
-    s->undo_dialog = nullptr;
+    s->close_dialogs();
+    if (s->shared->callbacks.undo_confirmed) s->shared->callbacks.undo_confirmed();
 }
 
-void on_reset_dialog1(lv_event_t* e) {
+void on_reset_continue(lv_event_t* e) {
     LiveScreen* s = self(e);
-    lv_obj_t* box = lv_event_get_current_target(e);
-    const char* button = lv_msgbox_get_active_btn_text(box);
-    const bool proceed = button != nullptr && std::string(button) == "Continue";
-    lv_msgbox_close(box);
-    s->reset_dialog1 = nullptr;
-    if (proceed) {
-        s->open_reset_dialog(2);
-    }
+    s->close_dialogs();
+    s->open_reset_dialog(2);
 }
 
-void on_reset_dialog2(lv_event_t* e) {
+void on_reset_confirm(lv_event_t* e) {
     LiveScreen* s = self(e);
-    lv_obj_t* box = lv_event_get_current_target(e);
-    const char* button = lv_msgbox_get_active_btn_text(box);
-    if (button != nullptr && std::string(button) == "RESET" && s->shared->callbacks.reset_confirmed) {
-        s->shared->callbacks.reset_confirmed();
-    }
-    lv_msgbox_close(box);
-    s->reset_dialog2 = nullptr;
+    s->close_dialogs();
+    if (s->shared->callbacks.reset_confirmed) s->shared->callbacks.reset_confirmed();
 }
 
 }  // namespace
@@ -357,7 +337,6 @@ void LiveScreen::create(Shared* shared_state) {
     menu_row(LV_SYMBOL_LEFT " UNDO", on_undo, tokens::text());
     lv_obj_t* pause_button = menu_row("PAUSE", on_pause, tokens::text());
     pause_button_label = lv_obj_get_child(pause_button, 0);
-    menu_row(LV_SYMBOL_LIST " DIAGNOSTICS", on_diagnostics, tokens::text());
     menu_row(LV_SYMBOL_TRASH " RESET MATCH", on_reset, tokens::error());
 
     // Rule detaches the dismiss row from the actions above it.
@@ -387,40 +366,42 @@ void LiveScreen::close_organizer_menu() {
 }
 
 void LiveScreen::open_undo_dialog() {
-    static const char* buttons[] = {"Undo", "Cancel", ""};
-    undo_dialog = lv_msgbox_create(nullptr, "Undo", undo_preview_text.c_str(), buttons, false);
-    lv_obj_add_event_cb(undo_dialog, on_undo_dialog, LV_EVENT_VALUE_CHANGED, this);
-    lv_obj_center(undo_dialog);
+    close_dialogs();
+    Dialog dialog = make_dialog(root, "UNDO", undo_preview_text.c_str(), on_dialog_dismiss, this);
+    if (undo_available) {
+        add_dialog_button(dialog, "CANCEL", tokens::surface_raised(), on_dialog_dismiss, this);
+        add_dialog_button(dialog, "UNDO", tokens::team_a(), on_undo_confirm, this);
+    } else {
+        // Nothing to take back, so the only sensible action is the way out.
+        add_dialog_button(dialog, "CLOSE", tokens::surface_raised(), on_dialog_dismiss, this);
+    }
+    undo_dialog = dialog.overlay;
 }
 
 void LiveScreen::open_reset_dialog(int step) {
+    close_dialogs();
     if (step == 1) {
-        static const char* buttons[] = {"Continue", "Cancel", ""};
-        reset_dialog1 = lv_msgbox_create(nullptr, "Reset match?",
-                                         "The current match will be archived.", buttons, false);
-        lv_obj_add_event_cb(reset_dialog1, on_reset_dialog1, LV_EVENT_VALUE_CHANGED, this);
-        lv_obj_center(reset_dialog1);
+        Dialog dialog = make_dialog(root, "RESET MATCH?", "The current match will be archived.",
+                                    on_dialog_dismiss, this);
+        add_dialog_button(dialog, "CANCEL", tokens::surface_raised(), on_dialog_dismiss, this);
+        add_dialog_button(dialog, "CONTINUE", tokens::error(), on_reset_continue, this);
+        reset_dialog1 = dialog.overlay;
     } else {
-        static const char* buttons[] = {"RESET", "Cancel", ""};
-        reset_dialog2 = lv_msgbox_create(nullptr, "Confirm reset",
-                                         "Really reset? This cannot be undone.", buttons, false);
-        lv_obj_add_event_cb(reset_dialog2, on_reset_dialog2, LV_EVENT_VALUE_CHANGED, this);
-        lv_obj_center(reset_dialog2);
+        Dialog dialog = make_dialog(root, "CONFIRM RESET", "Really reset? This cannot be undone.",
+                                    on_dialog_dismiss, this);
+        add_dialog_button(dialog, "CANCEL", tokens::surface_raised(), on_dialog_dismiss, this);
+        add_dialog_button(dialog, "RESET", tokens::error(), on_reset_confirm, this);
+        reset_dialog2 = dialog.overlay;
     }
 }
 
 void LiveScreen::close_dialogs() {
-    if (undo_dialog != nullptr) {
-        lv_msgbox_close(undo_dialog);
-        undo_dialog = nullptr;
-    }
-    if (reset_dialog1 != nullptr) {
-        lv_msgbox_close(reset_dialog1);
-        reset_dialog1 = nullptr;
-    }
-    if (reset_dialog2 != nullptr) {
-        lv_msgbox_close(reset_dialog2);
-        reset_dialog2 = nullptr;
+    // Async delete: closing runs from a button inside the dialog being deleted.
+    for (lv_obj_t** dialog : {&undo_dialog, &reset_dialog1, &reset_dialog2}) {
+        if (*dialog != nullptr) {
+            lv_obj_del_async(*dialog);
+            *dialog = nullptr;
+        }
     }
 }
 
@@ -452,12 +433,12 @@ void LiveScreen::update(const LiveViewModel& m) {
         lv_obj_add_flag(conflict_banner, LV_OBJ_FLAG_HIDDEN);
     }
 
+    undo_available = m.undo_preview.has_value();
     if (m.undo_preview) {
-        undo_preview_text = std::string("Undo ") +
-                            (*m.undo_preview == TeamId::A ? m.team_a.name : m.team_b.name) +
-                            " point?";
+        undo_preview_text = std::string("Undo the last point for ") +
+                            (*m.undo_preview == TeamId::A ? m.team_a.name : m.team_b.name) + "?";
     } else {
-        undo_preview_text = "Nothing to undo.";
+        undo_preview_text = "There is no point to undo yet.";
     }
     // Update the pause button label to reflect the next action.
     if (pause_button_label != nullptr) {
