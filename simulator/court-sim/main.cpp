@@ -945,6 +945,16 @@ int run_tour(App& app, const std::string& out_dir) {
     if (!settle_and_shoot("14-live-organizer")) return 1;
     app.court_ui.debug_open_organizer_menu(false);
 
+    m.live.undo_preview = TeamId::A;
+    app.court_ui.render(m);
+    app.court_ui.debug_open_undo_dialog();
+    app.court_ui.render(m);
+    if (!settle_and_shoot("15-undo-dialog")) return 1;
+
+    app.court_ui.debug_open_reset_dialog(2);
+    app.court_ui.render(m);
+    if (!settle_and_shoot("16-reset-confirm")) return 1;
+
     return 0;
 }
 

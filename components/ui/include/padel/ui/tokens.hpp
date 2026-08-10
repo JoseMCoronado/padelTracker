@@ -21,6 +21,9 @@ inline constexpr lv_coord_t kRadius = 12;
 // Spec: minimum touch target 48 px, larger for organizer actions.
 inline constexpr lv_coord_t kTouchTarget = 48;
 inline constexpr lv_coord_t kOrganizerTarget = 64;
+// Confirmation dialogs are where a mis-tap is destructive, so their buttons
+// are the largest targets in the UI.
+inline constexpr lv_coord_t kDialogTarget = 80;
 
 // --- Animation ----------------------------------------------------------
 inline constexpr std::uint32_t kPointPulseMs = 200;  // 150-250 ms per spec 14.3

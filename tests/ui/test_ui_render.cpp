@@ -423,6 +423,75 @@ TEST_CASE("organizer menu floats over the live screen without reflowing it") {
     CHECK(find_label("CLOSE") == nullptr);
 }
 
+TEST_CASE("confirmation dialogs are finger-sized and cancel closes them") {
+    ui::UiModel m = stress_model(ui::Screen::Live);
+    m.live.undo_preview = TeamId::A;
+    m.live.conflict = false;  // its banner has a CANCEL of its own
+    court_ui().render(m);
+    settle();
+
+    const auto tap = [&](const char* text) {
+        lv_obj_t* label = find_label(text);
+        REQUIRE(label != nullptr);
+        lv_area_t coords;
+        lv_obj_get_coords(lv_obj_get_parent(label), &coords);
+        s_pointer.point.x = (coords.x1 + coords.x2) / 2;
+        s_pointer.point.y = (coords.y1 + coords.y2) / 2;
+        const auto pump = [&] {
+            for (int i = 0; i < 6; ++i) {
+                lv_tick_inc(16);
+                lv_timer_handler();
+                court_ui().render(m);
+            }
+        };
+        s_pointer.pressed = true;
+        pump();
+        s_pointer.pressed = false;
+        pump();
+    };
+
+    // A dialog button is the target an organizer hits mid-match with a wet
+    // finger, so it has to stay well above the plain touch minimum.
+    const auto require_finger_sized = [](const char* text) {
+        lv_obj_t* label = find_label(text);
+        INFO("dialog button: " << text);
+        REQUIRE(label != nullptr);
+        lv_obj_t* button = lv_obj_get_parent(label);
+        CHECK(lv_obj_get_height(button) >= ui::tokens::kDialogTarget);
+        CHECK(lv_obj_get_width(button) >= 2 * ui::tokens::kDialogTarget);
+    };
+
+    court_ui().debug_open_undo_dialog();
+    settle();
+    require_labels_in_bounds();
+    require_finger_sized("CANCEL");
+    require_finger_sized("UNDO");
+    tap("CANCEL");
+    CHECK(find_label("UNDO LAST POINT") == nullptr);
+
+    // Reset keeps its two steps: the first confirm only opens the second.
+    court_ui().debug_open_reset_dialog(1);
+    settle();
+    require_finger_sized("CONTINUE");
+    tap("CONTINUE");
+    settle();
+    REQUIRE(find_label("CONFIRM RESET") != nullptr);
+    require_finger_sized("RESET");
+    tap("CANCEL");
+    CHECK(find_label("CONFIRM RESET") == nullptr);
+
+    // Nothing to undo: the dialog says so and offers only the way out.
+    m.live.undo_preview.reset();
+    court_ui().render(m);
+    settle();
+    court_ui().debug_open_undo_dialog();
+    settle();
+    CHECK(find_label("UNDO") == nullptr);
+    require_finger_sized("CLOSE");
+    tap("CLOSE");
+    CHECK(find_label("UNDO LAST POINT") == nullptr);
+}
+
 TEST_CASE("special scoring states render distinct label text") {
     ui::UiModel m = stress_model(ui::Screen::Live);
     for (const char* special : {"DEUCE", "GOLDEN POINT", "TIEBREAK", "MATCH TIEBREAK"}) {

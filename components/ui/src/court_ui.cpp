@@ -52,6 +52,18 @@ void CourtUi::debug_open_organizer_menu(bool open) {
     }
 }
 
+void CourtUi::debug_open_undo_dialog() {
+    if (screens_->created) {
+        screens_->live.open_undo_dialog();
+    }
+}
+
+void CourtUi::debug_open_reset_dialog(int step) {
+    if (screens_->created) {
+        screens_->live.open_reset_dialog(step);
+    }
+}
+
 MatchSettings CourtUi::debug_read_settings() const {
     return screens_->created ? screens_->setup.read_settings() : MatchSettings{};
 }

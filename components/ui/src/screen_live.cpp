@@ -367,7 +367,8 @@ void LiveScreen::close_organizer_menu() {
 
 void LiveScreen::open_undo_dialog() {
     close_dialogs();
-    Dialog dialog = make_dialog(root, "UNDO", undo_preview_text.c_str(), on_dialog_dismiss, this);
+    Dialog dialog =
+        make_dialog(root, "UNDO LAST POINT", undo_preview_text.c_str(), on_dialog_dismiss, this);
     if (undo_available) {
         add_dialog_button(dialog, "CANCEL", tokens::surface_raised(), on_dialog_dismiss, this);
         add_dialog_button(dialog, "UNDO", tokens::team_a(), on_undo_confirm, this);
@@ -435,7 +436,7 @@ void LiveScreen::update(const LiveViewModel& m) {
 
     undo_available = m.undo_preview.has_value();
     if (m.undo_preview) {
-        undo_preview_text = std::string("Undo the last point for ") +
+        undo_preview_text = std::string("Take the last point back from ") +
                             (*m.undo_preview == TeamId::A ? m.team_a.name : m.team_b.name) + "?";
     } else {
         undo_preview_text = "There is no point to undo yet.";

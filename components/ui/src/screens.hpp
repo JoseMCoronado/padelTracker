@@ -24,6 +24,22 @@ lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, lv_color_t color);
 lv_obj_t* make_button(lv_obj_t* parent, const char* text, lv_coord_t min_height,
                       lv_event_cb_t handler, void* user_data);
 
+// --- Modal confirmation dialog -------------------------------------------------
+
+// A dimmed full-screen backdrop plus a centered card with a title, a message
+// and a row of finger-sized buttons. The backdrop swallows the taps that
+// would otherwise land on the screen behind it (on the live screen that means
+// scoring a point), and tapping it runs on_dismiss.
+struct Dialog {
+    lv_obj_t* overlay = nullptr;  // delete this to close the dialog
+    lv_obj_t* buttons = nullptr;  // button row, filled via add_dialog_button
+};
+
+Dialog make_dialog(lv_obj_t* parent, const char* title, const char* message,
+                   lv_event_cb_t on_dismiss, void* user_data);
+lv_obj_t* add_dialog_button(const Dialog& dialog, const char* text, lv_color_t color,
+                            lv_event_cb_t handler, void* user_data);
+
 struct Shared {
     UiCallbacks callbacks{};
     MatchSettings settings_snapshot{};  // last rendered settings (setup screen)
@@ -101,11 +117,11 @@ struct LiveScreen {
     lv_obj_t* organizer_overlay = nullptr;
     lv_obj_t* pause_button_label = nullptr;
     lv_obj_t* undo_dialog = nullptr;   // created on demand
-    lv_obj_t* undo_dialog_text = nullptr;
     lv_obj_t* reset_dialog1 = nullptr;
     lv_obj_t* reset_dialog2 = nullptr;
 
-    std::string undo_preview_text = "Undo last point?";
+    std::string undo_preview_text = "Undo the last point?";
+    bool undo_available = false;
 
     void open_organizer_menu();
     void close_organizer_menu();

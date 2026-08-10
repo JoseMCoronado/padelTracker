@@ -65,6 +65,8 @@ public:
     void debug_select_preset(int preset_index);
     void debug_open_club_picker(TeamId team);
     void debug_open_organizer_menu(bool open);
+    void debug_open_undo_dialog();
+    void debug_open_reset_dialog(int step);
     MatchSettings debug_read_settings() const;
 
     // Setup-screen edits live inside LVGL widgets; the host reads them back

@@ -61,6 +61,87 @@ lv_obj_t* make_button(lv_obj_t* parent, const char* text, lv_coord_t min_height,
     return button;
 }
 
+// --- Modal confirmation dialog -------------------------------------------------
+
+namespace {
+
+// Two 80 px buttons side by side plus the message need this much card.
+constexpr lv_coord_t kDialogWidth = 620;
+
+}  // namespace
+
+Dialog make_dialog(lv_obj_t* parent, const char* title, const char* message,
+                   lv_event_cb_t on_dismiss, void* user_data) {
+    Dialog dialog{};
+
+    dialog.overlay = lv_obj_create(parent);
+    lv_obj_add_flag(dialog.overlay, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_size(dialog.overlay, tokens::kScreenWidth, tokens::kScreenHeight);
+    // Pull back over the screen root's padding so the backdrop reaches the edge.
+    lv_obj_align(dialog.overlay, LV_ALIGN_TOP_LEFT,
+                 -lv_obj_get_style_pad_left(parent, 0), -lv_obj_get_style_pad_top(parent, 0));
+    lv_obj_set_style_bg_color(dialog.overlay, tokens::bg(), 0);
+    lv_obj_set_style_bg_opa(dialog.overlay, LV_OPA_80, 0);
+    lv_obj_set_style_radius(dialog.overlay, 0, 0);
+    lv_obj_set_style_border_width(dialog.overlay, 0, 0);
+    lv_obj_set_style_pad_all(dialog.overlay, 0, 0);
+    lv_obj_add_flag(dialog.overlay, LV_OBJ_FLAG_CLICKABLE);
+    if (on_dismiss != nullptr) {
+        lv_obj_add_event_cb(dialog.overlay, on_dismiss, LV_EVENT_CLICKED, user_data);
+    }
+    lv_obj_clear_flag(dialog.overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* card = lv_obj_create(dialog.overlay);
+    lv_obj_set_size(card, kDialogWidth, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    // Clickable so a miss between the buttons is absorbed instead of reaching
+    // the backdrop's dismiss handler.
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(card, tokens::surface(), 0);
+    lv_obj_set_style_radius(card, tokens::kRadius, 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_color(card, tokens::surface_raised(), 0);
+    lv_obj_set_style_shadow_width(card, 48, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_50, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_black(), 0);
+    lv_obj_set_style_pad_all(card, tokens::kSpaceXl, 0);
+    lv_obj_set_style_pad_row(card, tokens::kSpaceM, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title_label = make_label(card, tokens::font_large(), tokens::text());
+    lv_label_set_text(title_label, title);
+    lv_obj_set_style_text_letter_space(title_label, 2, 0);
+
+    lv_obj_t* message_label = make_label(card, tokens::font_heading(), tokens::text_muted());
+    lv_obj_set_width(message_label, LV_PCT(100));
+    lv_label_set_long_mode(message_label, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(message_label, message);
+
+    dialog.buttons = lv_obj_create(card);
+    lv_obj_set_size(dialog.buttons, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(dialog.buttons, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(dialog.buttons, 0, 0);
+    lv_obj_set_style_pad_all(dialog.buttons, 0, 0);
+    lv_obj_set_style_pad_top(dialog.buttons, tokens::kSpaceS, 0);
+    lv_obj_set_style_pad_column(dialog.buttons, tokens::kSpaceM, 0);
+    lv_obj_set_flex_flow(dialog.buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(dialog.buttons, LV_OBJ_FLAG_SCROLLABLE);
+
+    return dialog;
+}
+
+lv_obj_t* add_dialog_button(const Dialog& dialog, const char* text, lv_color_t color,
+                            lv_event_cb_t handler, void* user_data) {
+    lv_obj_t* button =
+        make_button(dialog.buttons, text, tokens::kDialogTarget, handler, user_data);
+    // Equal shares of the row: both actions end up the same wide target.
+    lv_obj_set_flex_grow(button, 1);
+    lv_obj_set_style_bg_color(button, color, 0);
+    lv_obj_set_style_text_font(lv_obj_get_child(button, 0), tokens::font_large(), 0);
+    return button;
+}
+
 // --- Broadcast-style scoreboard --------------------------------------------
 
 namespace {
