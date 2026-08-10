@@ -26,11 +26,13 @@ simulator/
   court-sim/    SDL desktop court: real UI + service + journal + RemoteCore
 firmware/
   espnow-linktest/  ESP-NOW link proof for the DevKits (see its README)
+  button-test/      Arcade button/lamp bench test + bounce measurement (esp32s3)
   remote/           XIAO ESP32-C3 remote (esp32c3)
   court-display/    Waveshare 7B court unit (esp32s3)
 tests/          Native unit tests (Catch2), incl. power-loss + lossy-radio sims
 tools/          Build and test scripts
 docs/           Scoring rules, protocol, pairing, pinout, bring-up runbooks
+docs/troubleshooting/  Hardware debugging learnings (display black screen, flicker, ...)
 ```
 
 `components/` has zero ESP-IDF/LVGL dependencies and compiles natively on the
@@ -72,7 +74,21 @@ The real 1024x600 LVGL UI in an SDL window, driven by the real
 press, `Shift+a`/`b` wired button, `l` packet loss, `p` pairing mode, `r`
 power-cycle (journal recovery), `q` quit.
 
+Players can be picked from the roster modal (search, NEW PLAYER, ADD
+GUEST) in every mode. If a team name is left at the generic default the
+picked players become the team header on the scoring page; a custom team
+name keeps the players in small print underneath. For a club round set
+MODE to "Club round" — there the pick is required (2 per team) — then
+START CLUB ROUND. The round plays two first-to-3 mini-sets — after set 1 the
+mix screen announces the reshuffled teams, and after set 2 the standings
+screen shows Top 2 / Bottom 2 (ties broken by an announced automatic coin
+flip). Roster lives in `court-sim-data/roster.txt`; per-player results
+append to `court-sim-data/club_results.csv`.
+
 ## Firmware builds
+
+First time with real hardware? Follow the in-order walkthrough in
+[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
 
 ```bash
 source ~/esp/esp-idf/export.sh

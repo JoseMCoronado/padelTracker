@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_now.h"
+#include "esp_random.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -35,9 +37,13 @@
 
 #include "board_7b.hpp"
 #include "lvgl.h"
+#include "padel/application/club_controller.hpp"
 #include "padel/application/court_service.hpp"
 #include "padel/application/pairing.hpp"
+#include "padel/application/roster.hpp"
+#include "padel/application/roster_file.hpp"
 #include "padel/common/log.hpp"
+#include "padel/domain/club_round.hpp"
 #include "padel/persistence/journal.hpp"
 #include "padel/persistence/stdio_file_backend.hpp"
 #include "padel/ui/court_ui.hpp"
@@ -173,18 +179,34 @@ public:
         if (raw_ != stable_ && now_ms - edge_at_ms_ >= 30) {
             stable_ = raw_;
             if (stable_) {
+                ++presses_;
                 return true;
             }
         }
         return false;
     }
 
+    // Debounced level and press count for the diagnostics screen, so wiring
+    // can be checked without scoring a point.
+    bool down() const { return stable_; }
+    std::uint32_t presses() const { return presses_; }
+
 private:
     gpio_num_t pin_;
     bool raw_ = false;
     bool stable_ = false;
     std::uint64_t edge_at_ms_ = 0;
+    std::uint32_t presses_ = 0;
 };
+
+std::string wired_button_label(char team, int gpio) {
+    return std::string("Wired button ") + team + " (GPIO" + std::to_string(gpio) + ")";
+}
+
+std::string wired_button_value(const WiredButton& button) {
+    return std::string(button.down() ? "DOWN" : "up") + ", " +
+           std::to_string(button.presses()) + " presses";
+}
 
 // --- UI command queue (LVGL task -> app task) --------------------------------
 
@@ -203,6 +225,11 @@ struct AppCommand {
         ConfirmPairing,
         RecoveryChoice,
         TestBeep,
+        CreatePlayer,
+        StartClubRound,
+        ClubNextSet,
+        ClubNewRound,
+        ClubDone,
     };
     Type type{};
     TeamId team{TeamId::A};
@@ -210,6 +237,8 @@ struct AppCommand {
     ui::MatchSettings settings{};
     ui::Screen screen{ui::Screen::Setup};
     bool resume = false;
+    std::string player_name{};
+    std::array<ui::ClubPlayer, 4> club_players{};
 };
 
 std::mutex s_command_mutex;
@@ -245,6 +274,18 @@ struct CourtApp {
     std::unique_ptr<application::CourtService> service;
     std::unique_ptr<application::PairingService> pairing;
 
+    // Club round: roster + results on LittleFS, controller over the match
+    // lifecycle. An in-flight round is RAM-only (a mini-set is minutes long).
+    std::unique_ptr<application::FileRosterStore> roster_store;
+    std::unique_ptr<application::PlayerRoster> roster;
+    std::unique_ptr<application::FileResultsLog> results_log;
+    std::unique_ptr<application::ClubController> club;
+    bool club_active = false;
+    std::string club_hint;
+    std::vector<ui::ClubPlayer> club_suggested_a;
+    std::vector<ui::ClubPlayer> club_suggested_b;
+    std::uint32_t club_suggestion_seq = 0;
+
     WiredButton button_a{kButtonAGpio};
     WiredButton button_b{kButtonBGpio};
 
@@ -257,6 +298,7 @@ struct CourtApp {
     std::uint64_t flash_until_ms = 0;
     std::uint8_t prev_points_a = 0;
     std::uint8_t prev_points_b = 0;
+    std::uint32_t acked_remote_undos = 0;
     domain::MatchLifecycle prev_lifecycle = domain::MatchLifecycle::NotStarted;
     bool storage_degraded = false;
 
@@ -272,6 +314,13 @@ struct CourtApp {
     // service -> restore allow-list -> Recovery or Setup screen.
     void boot(bool storage_ok) {
         storage_degraded = !storage_ok;
+
+        // Roster seeds itself (in RAM only when the mount failed).
+        roster_store = std::make_unique<application::FileRosterStore>("/littlefs/roster.txt");
+        roster = std::make_unique<application::PlayerRoster>(*roster_store);
+        results_log =
+            std::make_unique<application::FileResultsLog>("/littlefs/club_results.csv");
+        club = std::make_unique<application::ClubController>(*results_log, clock);
 
         std::vector<application::CommittedEvent> recovered_events;
         persistence::TailStatus tail = persistence::TailStatus::Clean;
@@ -339,6 +388,38 @@ struct CourtApp {
         create_pairing_service();
     }
 
+    // --- Club round ----------------------------------------------------------
+    // Leaves an in-flight club round without inventing a new forbidden pair
+    // (finish_round only records Top 2 when the round is Complete).
+    void abandon_club_round() {
+        if (club->round_active()) {
+            club->finish_round();
+        }
+        club_active = false;
+        club_hint.clear();
+    }
+
+    // Starts the mini-set the controller is waiting on as a normal journaled
+    // match with the pairing as team names (same code path as court-sim).
+    void begin_club_set() {
+        const auto teams = club->current_set_teams();
+        settings.team_a_name = teams.team_a;
+        settings.team_b_name = teams.team_b;
+        settings.players_a.clear();
+        settings.players_b.clear();
+        settings.preset_index = ui::kClubRoundPreset;
+
+        if (service->state().lifecycle != domain::MatchLifecycle::NotStarted ||
+            file->size() > 0) {
+            fresh_service();
+        }
+        if (service->start_match(settings.first_server)) {
+            match_started_ms = clock.now_ms();
+            model.screen = ui::Screen::Live;
+            ESP_LOGI(TAG, "club set %d started", club->set_number());
+        }
+    }
+
     // --- Radio inbound -------------------------------------------------------
     void handle_frame(const RxFrame& frame) {
         const auto type =
@@ -380,6 +461,15 @@ struct CourtApp {
                 beep(80);
             }
         }
+        // A remote hold reverses a point with nobody touching the court, so
+        // it gets its own long beep instead of sounding like a score. The
+        // later beep() restarts the off timer, replacing the 80 ms one.
+        const std::uint32_t undos = service->counters().remote_undos;
+        const bool grew = undos > acked_remote_undos;
+        acked_remote_undos = undos;  // a rebuilt service restarts at zero
+        if (grew) {
+            beep(500);
+        }
     }
 
     // --- UI commands ---------------------------------------------------------
@@ -403,6 +493,7 @@ struct CourtApp {
                 service->resolve_conflict(command.winner);
                 break;
             case Type::StartMatch:
+                abandon_club_round();
                 settings = command.settings;
                 if (service->state().lifecycle != domain::MatchLifecycle::NotStarted ||
                     file->size() > 0) {
@@ -415,10 +506,12 @@ struct CourtApp {
                 }
                 break;
             case Type::ResetConfirmed:
+                abandon_club_round();
                 service->reset_match();
                 model.screen = ui::Screen::Setup;
                 break;
             case Type::NewMatch:
+                abandon_club_round();
                 model.screen = ui::Screen::Setup;
                 break;
             case Type::ShowScreen:
@@ -445,12 +538,69 @@ struct CourtApp {
                     model.screen = ui::Screen::Live;
                     match_started_ms = clock.now_ms();
                 } else {
+                    abandon_club_round();
                     fresh_service();
                     model.screen = ui::Screen::Setup;
                 }
                 break;
             case Type::TestBeep:
                 beep(200);
+                break;
+            case Type::CreatePlayer:
+                roster->add_player(command.player_name);
+                break;
+            case Type::StartClubRound: {
+                // Setup always means start fresh; orphaned rounds (RESET / NEW
+                // MATCH without finish) must not block the next start.
+                if (club->round_active()) {
+                    abandon_club_round();
+                }
+                settings = command.settings;
+                std::array<application::Player, 4> players{};
+                for (std::size_t i = 0; i < 4; ++i) {
+                    players[i] = application::Player{command.club_players[i].id,
+                                                     command.club_players[i].name,
+                                                     command.club_players[i].guest};
+                }
+                const auto error = club->start_round(players, esp_random());
+                if (error == application::ClubController::StartError::ForbiddenPair) {
+                    club_hint =
+                        "Last round's Top 2 can't be teammates - put them on opposite sides";
+                    break;
+                }
+                if (error == application::ClubController::StartError::DuplicatePlayer) {
+                    club_hint = "Same player picked twice - split them up";
+                    break;
+                }
+                if (error.has_value()) {
+                    club_hint = "A club round is already in progress";
+                    break;
+                }
+                club_hint.clear();
+                club_active = true;
+                begin_club_set();
+                break;
+            }
+            case Type::ClubNextSet:
+                if (club_active && club->stage() == domain::ClubStage::Set2) {
+                    begin_club_set();
+                }
+                break;
+            case Type::ClubNewRound:
+                // Capture Top 2 / Bottom 2 before finish_round clears the round.
+                if (ui::suggest_next_round_picks(*club, club_suggested_a, club_suggested_b)) {
+                    ++club_suggestion_seq;
+                }
+                club->finish_round();
+                club_active = false;
+                club_hint.clear();
+                model.screen = ui::Screen::Setup;
+                break;
+            case Type::ClubDone:
+                club->finish_round();
+                club_active = false;
+                club_hint.clear();
+                model.screen = ui::Screen::Setup;
                 break;
         }
     }
@@ -465,10 +615,15 @@ struct CourtApp {
         rows.push_back({"Board profile", "Waveshare 7B 1024x600 (UNVERIFIED)"});
         rows.push_back({"Court id", std::to_string(kCourtId)});
         rows.push_back({"Radio channel", std::to_string(CONFIG_PADEL_COURT_WIFI_CHANNEL)});
+        rows.push_back({wired_button_label('A', CONFIG_PADEL_COURT_BUTTON_A_GPIO),
+                        wired_button_value(button_a)});
+        rows.push_back({wired_button_label('B', CONFIG_PADEL_COURT_BUTTON_B_GPIO),
+                        wired_button_value(button_b)});
         rows.push_back({"Accepted", std::to_string(counters.accepted)});
         rows.push_back({"Duplicates", std::to_string(counters.duplicates)});
         rows.push_back({"Rejected", std::to_string(counters.rejected)});
         rows.push_back({"Conflicts", std::to_string(counters.conflicts)});
+        rows.push_back({"Remote undos", std::to_string(counters.remote_undos)});
         rows.push_back({"Storage failures", std::to_string(counters.storage_failures)});
         rows.push_back({"Dedup accepted/dup/stale",
                         std::to_string(dedup.accepted) + "/" + std::to_string(dedup.duplicates) +
@@ -515,7 +670,16 @@ struct CourtApp {
         if (state.lifecycle == domain::MatchLifecycle::Completed &&
             prev_lifecycle != domain::MatchLifecycle::Completed &&
             model.screen == ui::Screen::Live) {
-            model.screen = ui::Screen::MatchComplete;
+            if (club_active) {
+                // The finished mini-set feeds the club round; flow continues
+                // on the mix or standings screen.
+                club->on_set_complete(state);
+                model.screen = club->stage() == domain::ClubStage::Set2
+                                   ? ui::Screen::ClubMix
+                                   : ui::Screen::ClubStandings;
+            } else {
+                model.screen = ui::Screen::MatchComplete;
+            }
             beep(400);
         }
         prev_lifecycle = state.lifecycle;
@@ -530,6 +694,10 @@ struct CourtApp {
         }
         model.complete = ui::build_complete_model(
             *service, settings, match_started_ms > 0 ? now - match_started_ms : 0);
+        model.club = ui::build_club_model(*roster, *club, club_hint);
+        model.club.suggested_a = club_suggested_a;
+        model.club.suggested_b = club_suggested_b;
+        model.club.suggestion_seq = club_suggestion_seq;
 
         if (model.screen == ui::Screen::Pairing) {
             if (!pairing->active()) {
@@ -585,6 +753,21 @@ ui::UiCallbacks make_callbacks() {
         push_command({.type = AppCommand::Type::RecoveryChoice, .resume = resume});
     };
     cb.test_beep = []() { push_command({.type = AppCommand::Type::TestBeep}); };
+    cb.create_player = [](const std::string& name) {
+        AppCommand command{.type = AppCommand::Type::CreatePlayer};
+        command.player_name = name;
+        push_command(std::move(command));
+    };
+    cb.start_club_round = [](const std::array<ui::ClubPlayer, 4>& players,
+                             const ui::MatchSettings& settings) {
+        AppCommand command{.type = AppCommand::Type::StartClubRound};
+        command.club_players = players;
+        command.settings = settings;
+        push_command(std::move(command));
+    };
+    cb.club_next_set = []() { push_command({.type = AppCommand::Type::ClubNextSet}); };
+    cb.club_new_round = []() { push_command({.type = AppCommand::Type::ClubNewRound}); };
+    cb.club_done = []() { push_command({.type = AppCommand::Type::ClubDone}); };
     return cb;
 }
 

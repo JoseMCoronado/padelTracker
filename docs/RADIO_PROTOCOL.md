@@ -24,12 +24,20 @@ serialization with a CRC16 trailer — never raw struct memory.
 | boot_id | 4 | LE |
 | sequence | 4 | LE |
 | team_id | 1 | 1 = A, 2 = B |
-| action | 1 | 0x01 = AWARD_POINT |
+| action | 1 | 0x01 = AWARD_POINT, 0x02 = UNDO_LAST_POINT |
 | button_duration_ms | 2 | LE |
 | battery_mv | 2 | LE, 0 = unknown |
 | monotonic_ms | 4 | LE |
 | flags | 1 | reserved, 0 |
 | crc16 | 2 | LE |
+
+`UNDO_LAST_POINT` reuses this frame rather than adding a message type, so it
+inherits the identity, deduplication and retry machinery unchanged: a lost ACK
+on an undo re-ACKs as `DuplicateAccepted` instead of taking a second point off
+the board. The court only honours it when the newest point belongs to the
+sending team, and refuses while a press is parked in the conflict window
+(ADR-0014). Version stays 1: the layout is unchanged, and a court built before
+this action rejects the frame cleanly as `InvalidAction`.
 
 ## ACK (court -> remote), 31 bytes
 
@@ -61,6 +69,7 @@ serialization with a CRC16 trailer — never raw struct memory.
 | 7 | RejectedConflict |
 | 8 | RejectedInvalidPacket |
 | 9 | ErrorStorage |
+| 10 | RejectedNothingToUndo |
 
 ### Display codes
 
@@ -92,3 +101,8 @@ backoff_ms: [0, 80, 180, 350, 650]
 
 The remote never allocates a new sequence while an intent is pending; a repeat
 press during the pending window retransmits the same identity.
+
+An award intent is transmitted when the button is *released*, not when it goes
+down, because until the finger lifts the press could still be growing into a
+hold-to-undo. The press cue still fires immediately on contact, so the delay
+added to a normal point is only as long as the press itself.

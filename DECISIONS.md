@@ -159,9 +159,11 @@ via `LV_CONF_SKIP` + compile definitions instead of maintaining a forked
 (`components/ui`) rendered natively in an SDL2 window (`simulator/court-sim`)
 with the real CourtService and a real file journal behind it. SDL2 is built
 from source via FetchContent because the Homebrew SDL2 on the dev machine is
-x86_64-only. The big point score uses Montserrat 48 with 3x transform zoom;
-a dedicated large font is a later polish item. On-device, only the board
-profile (panel + GT911 + backlight) differs from the simulator backend.
+x86_64-only. The live point score uses a digits-only Montserrat 300 px font
+(`components/ui/fonts`, glyphs 0-9/A/D) in a flex-grown slot so numerals fill
+the team panel; match-complete banners still use Montserrat 48. On-device,
+only the board profile (panel + GT911 + backlight) differs from the
+simulator backend.
 
 Consequences: All screens, flows, and UI checks run and regress natively; a
 future LVGL 9 migration is deliberate and separate. Risk accepted: minor
@@ -249,3 +251,144 @@ be included in journal/snapshot state in M3.
 
 Consequences: O(1) memory per remote, survives reboot via persistence, and a
 retried packet after a court reboot is classified Duplicate, not applied twice.
+
+## ADR-0013: Club round as a layer above the match engine, players by slot
+
+Status: Accepted
+
+Context: Club play (rotation sheets) needs per-court rounds of two
+first-to-3 mini-sets with a fixed mix rule, per-player standings
+(wins, then game differential), Top 2 / Bottom 2, and a tie broken by a
+coin flip. The user wants named players from a roster (seed: Jose, Zoe,
+William, Szewei, Ruxandra, Lewis, Luigi, Raymond, Paulina, Vineet, Louis,
+Adrien), on-device player creation, unpersisted guests, and the program to
+flip the coin itself and announce the result.
+
+Decision: Keep the match engine untouched. `domain::ClubRound` is pure
+logic over player slots 0..3: pairings (set 1 = picks, set 2 = winners
+split and each takes a loser), standings, Top 2 / Bottom 2, and a
+deterministic coin flip from an injected seed. Names live in
+`application::PlayerRoster` (file-backed store, seeded on first run;
+guests are minted per session with sentinel ids and never persisted).
+`application::ClubController` maps players to slots, runs each mini-set as
+a normal journaled match (club preset), consumes the completed
+`MatchState`, appends one CSV row per player to a results log (the future
+stats/sync feed), and remembers the round's Top 2 as the forbidden pair
+for the next round. Hosts (court-sim, court-display) only route: match
+complete -> mix screen -> standings screen. The picker UI enforces
+2-per-team selection and creates players through the host round trip.
+
+Consequences: Every club rule is natively tested against the rotation
+sheet examples, including the coin-flip announcement; each mini-set gets
+the full journal/recovery treatment for free. A power cycle mid-round
+loses the round bookkeeping (a mini-set is minutes long); multi-court
+rotation (M8) can consume Top2/Bottom2 without touching the scoring path.
+
+## ADR-0014: Remote hold-to-undo, scoped to the holder's own last point
+
+Status: Accepted — deliberate departure from spec 11.2 and 14.6
+
+Context: Spec 14.6 makes undo an organizer action ("no remote needs to be
+involved") and 11.2 states that no remote gesture undoes anything; the
+player role explicitly has "no destructive controls". In practice the
+court unit is at the net post and the players are on court with the
+remotes, so the only way to fix a mis-press today is to walk over and use
+the touchscreen. The user asked for a remote gesture and chose a 3 s hold
+over a double press.
+
+A double press was rejected: the 700 ms retrigger guard exists precisely
+because accidental double taps are the common failure mode of a clip-on
+button, and the bench measurements on the arcade switches showed bounce
+bursts long enough to fake one. Turning the most likely accident into a
+destructive action inverts that safety property.
+
+Decision: Holding a paired remote for `undo_hold_ms` (3 s) sends a
+POINT_INTENT carrying `Action::UndoLastPoint`, which the court applies as
+`UndoLastScoringAction{only_team = the remote's team}` journaled with
+`InputSource::Remote`. Three constraints keep it from becoming a dispute
+generator:
+
+- **Team-scoped.** The undo only proceeds if the *newest* point belongs to
+  the holder's team. It never reverses the opponents' point and never
+  reaches past one, so a rejected hold leaves the score exactly as it was.
+- **Once per hold.** The gesture fires a single intent no matter how long
+  the button stays down; a second undo needs a fresh press.
+- **Refused while unsettled.** A hold arriving with a press parked in the
+  conflict window, or with a conflict on screen, is rejected outright.
+
+The award intent therefore moves from press-down to release: while the
+button is down, the press could still become a hold, and an undo that
+fired *after* its own press had already scored would just cancel itself
+and leave the mis-pressed point standing. The press cue still plays on
+contact, so the remote feels unchanged; the added latency is the length
+of the press. Reusing the POINT_INTENT frame rather than adding a message
+type means the undo inherits sequence identity, dedup and retries, so a
+lost ACK cannot remove two points.
+
+Consequences: A player can silently reverse their own last point with
+nobody at the court unit, which is exactly what the spec was protecting
+against — accepted knowingly, mitigated by team scoping and a distinct
+500 ms court beep so an undo is never mistaken for a score. The organizer
+undo on the Live screen is unchanged and still unscoped. `undo_hold_ms`
+must stay below `pairing_hold_ms` (5 s), which only matters while
+unpaired, where the hold still means pairing and never sends an undo.
+
+## ADR-0015: Remote deep sleep after inactivity, and the waking press never scores
+
+Status: Accepted
+
+Context: The remote runs always-awake with the ESP-NOW receiver on, which
+measures out at tens of milliamps. On a 500 mAh LiPo that covers a session
+comfortably but flattens the cell in well under a day of standby, so a
+remote left in a kit bag is dead when it is next needed. Spec 11.4 orders
+the power work as always-awake, then light/modem sleep, then deep sleep
+after inactivity, gated on "do not optimize sleep before packet/ACK
+reliability is tested". That gate was cleared on hardware: both units
+paired, scored, deduplicated and survived power cycles.
+
+Decision: Deep sleep after `inactivity_sleep_ms` (15 min), waking on the
+point button. Two parts are worth recording.
+
+**Step 3 before step 2.** Light sleep at roughly 130 uA would already beat
+the 7-day standby target in spec 4.5, but standby is the failure mode that
+actually bites, and deep sleep reaches it by a path that is already proven:
+a wake is a reboot, and reboots are safe because `sequence_baseline` in NVS
+only moves forward and the deduplicator treats a fresh `boot_id` as a new
+sequence space. Light/modem sleep between points, which would extend
+*match* runtime rather than standby, is still open as spec 11.4 step 2.
+
+**The waking press does not score.** A wake takes a few hundred
+milliseconds to re-init, and measured taps on the arcade switches run
+190-320 ms, so the button is usually released before the firmware is
+listening. Inferring a point from the wake cause was rejected: it would let
+a remote jostled in a bag silently add a point, and a phantom point
+corrupts a score in a way nobody can later reconstruct, which is worse than
+a press that visibly did nothing. The firmware instead masks the button
+until it is seen released, swallowing exactly the waking press, and plays a
+distinct two-pulse `Woke` cue so the remote is visibly alive.
+
+The decision of *when* to sleep lives in `RemoteCore::sleep_due()` rather
+than the firmware, so it is covered by native tests. It refuses while an
+intent is in flight, while advertising for a pairing, and while the button
+is down, which is what stops sleep from stranding an unacknowledged point.
+An unpaired remote does sleep: `PairingRequired` is otherwise a state a
+remote can sit in forever, draining in a drawer.
+
+Consequences: The first press of a session after a long gap wakes rather
+than scores, which players must learn; the LED cue and the fact that
+organizer setup happens on the touchscreen first make this cheap in
+practice. A spurious wake costs `post_wake_idle_ms` (60 s) of awake time
+rather than a full timeout. Each wake is a reboot, so it burns one NVS
+baseline write and a 32-sequence chunk on the following press, which is
+immaterial against NVS endurance. Deep sleep wake constrains the button to
+GPIO0-5 on the ESP32-C3; a `static_assert` enforces this, since moving the
+button to any other pad would otherwise silently produce a remote that
+never wakes. Because the console is the chip's own USB Serial/JTAG, a
+sleeping remote vanishes from the host's serial ports entirely, so
+`enter_deep_sleep()` drains the console first or the remote appears to have
+crashed; see `docs/HARDWARE_PINOUT.md`.
+
+Verified on hardware 2026-08-05 with a 60 s bench timeout: slept on
+schedule, woke on the D1 press, that press left `presses=0 intents=0`, and
+the following press scored and was ACKed by the court in 490 ms. Repetition
+(the 100-cycle soak in spec line 1630) is still outstanding.

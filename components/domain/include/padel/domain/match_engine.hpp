@@ -76,7 +76,7 @@ private:
 
     EventId append(Event event);
     void rebuild();
-    std::optional<EventId> find_undo_target() const;
+    std::optional<EventId> find_undo_target(std::optional<TeamId> only_team) const;
     DecidedEvent make_decided(Event payload) const;
 
     std::vector<StoredEvent> events_{};

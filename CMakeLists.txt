@@ -29,7 +29,7 @@ if(PADEL_BUILD_UI)
     target_compile_definitions(lvgl PUBLIC
         LV_CONF_SKIP=1
         LV_COLOR_DEPTH=16          # matches the RGB565 panel on the device
-        LV_COLOR_SCREEN_TRANSP=1   # required by the transform-zoom score labels
+        LV_COLOR_SCREEN_TRANSP=1
         LV_FONT_MONTSERRAT_14=1
         LV_FONT_MONTSERRAT_16=1
         LV_FONT_MONTSERRAT_20=1

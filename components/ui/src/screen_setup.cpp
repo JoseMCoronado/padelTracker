@@ -1,5 +1,7 @@
 // Setup screen (spec 14.4): court label, team/player names, scoring preset,
 // first server, remote pairing status, start.
+#include <cctype>
+
 #include "padel/ui/tokens.hpp"
 #include "screens.hpp"
 
@@ -44,10 +46,8 @@ lv_obj_t* make_field(lv_obj_t* parent, const char* title, SetupScreen* screen) {
 }
 
 void on_start(lv_event_t* e) {
-    SetupScreen* s = self(e);
-    if (s->shared->callbacks.start_match) {
-        s->shared->callbacks.start_match(s->read_settings());
-    }
+    // Routes to start_match or start_club_round (screen_club.cpp).
+    self(e)->on_start_pressed();
 }
 
 void on_pair_a(lv_event_t* e) {
@@ -106,7 +106,7 @@ void SetupScreen::create(Shared* shared_state) {
     lv_obj_clear_flag(rules_column, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* preset_title = make_label(rules_column, tokens::font_small(), tokens::text_muted());
-    lv_label_set_text(preset_title, "SCORING PRESET");
+    lv_label_set_text(preset_title, "MODE");
     preset_dropdown = lv_dropdown_create(rules_column);
     lv_obj_set_width(preset_dropdown, LV_PCT(100));
     lv_dropdown_set_options(preset_dropdown, dropdown_options(preset_names()).c_str());
@@ -117,10 +117,12 @@ void SetupScreen::create(Shared* shared_state) {
     lv_obj_set_width(server_dropdown, LV_PCT(100));
     lv_dropdown_set_options(server_dropdown, "Team A\nTeam B");
 
+    // Player names come from the club picker; team names cover the rest.
     team_a_field = make_field(form, "TEAM A NAME", this);
     team_b_field = make_field(form, "TEAM B NAME", this);
-    players_a_field = make_field(form, "TEAM A PLAYERS (OPTIONAL)", this);
-    players_b_field = make_field(form, "TEAM B PLAYERS (OPTIONAL)", this);
+
+    // Club round toggle + per-team player pickers (screen_club.cpp).
+    create_club_row(root);
 
     // Remote status + pairing entry points.
     lv_obj_t* remotes = make_panel(root);
@@ -150,6 +152,7 @@ void SetupScreen::create(Shared* shared_state) {
                                   on_start, this);
     lv_obj_set_style_bg_color(start, tokens::success(), 0);
     lv_obj_set_width(start, 320);
+    start_label = lv_obj_get_child(start, 0);
 
     keyboard = lv_keyboard_create(root);
     lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
@@ -162,8 +165,53 @@ MatchSettings SetupScreen::read_settings() const {
     settings.court_label = lv_textarea_get_text(court_field);
     settings.team_a_name = lv_textarea_get_text(team_a_field);
     settings.team_b_name = lv_textarea_get_text(team_b_field);
-    settings.players_a = lv_textarea_get_text(players_a_field);
-    settings.players_b = lv_textarea_get_text(players_b_field);
+    // Players come from the roster picker in every mode (empty when none
+    // were picked); they show under the team names on the live screen.
+    const auto players_of = [](const std::vector<ClubPlayer>& picked) {
+        std::string names;
+        for (const ClubPlayer& player : picked) {
+            if (!names.empty()) {
+                names += " / ";
+            }
+            names += player.name;
+        }
+        return names;
+    };
+    settings.players_a = players_of(picked_a);
+    settings.players_b = players_of(picked_b);
+    // A team name left as the generic default gets replaced by the picked
+    // players, so the scoring page header shows real names instead of
+    // "TEAM A" with the players in small print underneath. The header uses
+    // the club-style format: "JOSE & ZOE".
+    const auto to_upper = [](std::string text) {
+        for (char& c : text) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        return text;
+    };
+    const auto header_of = [&](const std::vector<ClubPlayer>& picked) {
+        std::string names;
+        for (const ClubPlayer& player : picked) {
+            if (!names.empty()) {
+                names += " & ";
+            }
+            names += to_upper(player.name);
+        }
+        return names;
+    };
+    const auto promote_players = [&](std::string& team_name, std::string& players,
+                                     const std::vector<ClubPlayer>& picked,
+                                     const char* generic) {
+        if (picked.empty()) {
+            return;
+        }
+        if (team_name.empty() || to_upper(team_name) == generic) {
+            team_name = header_of(picked);
+            players.clear();
+        }
+    };
+    promote_players(settings.team_a_name, settings.players_a, picked_a, "TEAM A");
+    promote_players(settings.team_b_name, settings.players_b, picked_b, "TEAM B");
     settings.preset_index = static_cast<int>(lv_dropdown_get_selected(preset_dropdown));
     settings.first_server =
         lv_dropdown_get_selected(server_dropdown) == 0 ? TeamId::A : TeamId::B;
@@ -173,15 +221,14 @@ MatchSettings SetupScreen::read_settings() const {
     return settings;
 }
 
-void SetupScreen::update(const MatchSettings& settings, const LiveViewModel& live) {
+void SetupScreen::update(const MatchSettings& settings, const LiveViewModel& live,
+                         const ClubViewModel& club) {
     // Seed the editable fields once (organizer edits must not be clobbered
     // by refreshes).
     if (!fields_initialized) {
         lv_textarea_set_text(court_field, settings.court_label.c_str());
         lv_textarea_set_text(team_a_field, settings.team_a_name.c_str());
         lv_textarea_set_text(team_b_field, settings.team_b_name.c_str());
-        lv_textarea_set_text(players_a_field, settings.players_a.c_str());
-        lv_textarea_set_text(players_b_field, settings.players_b.c_str());
         lv_dropdown_set_selected(preset_dropdown, settings.preset_index);
         lv_dropdown_set_selected(server_dropdown, settings.first_server == TeamId::A ? 0 : 1);
         fields_initialized = true;
@@ -195,6 +242,8 @@ void SetupScreen::update(const MatchSettings& settings, const LiveViewModel& liv
     };
     set_text(remote_a_status, remote_line(live.team_a, "Team A"));
     set_text(remote_b_status, remote_line(live.team_b, "Team B"));
+
+    update_club(club);
 }
 
 }  // namespace padel::ui::internal

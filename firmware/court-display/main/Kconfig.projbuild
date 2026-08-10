@@ -22,13 +22,21 @@ config PADEL_COURT_BUZZER_GPIO
 
 config PADEL_COURT_BUTTON_A_GPIO
     int "Wired backup button GPIO (Team A)"
-    default 16
+    default 13
     help
-        Arcade button, active low with internal pull-up. GPIO16/15 are the
-        RS485 pins on the 7B, repurposed as inputs when RS485 is unused.
+        Arcade button, active low with internal pull-up. GPIO13 is a TF card
+        pin; this firmware keeps its journal on internal-flash LittleFS and
+        never touches the card, so 11/12/13 are free.
+
+        Do not use GPIO16 here: it is RS485_RXD, wired to the *output* of the
+        7B's onboard SP3485 transceiver, so a button pulling it low fights a
+        driven pin.
 
 config PADEL_COURT_BUTTON_B_GPIO
     int "Wired backup button GPIO (Team B)"
     default 15
+    help
+        GPIO15 is RS485_TXD, which feeds the transceiver's high-impedance
+        input, so it is safe to repurpose while RS485 is unused.
 
 endmenu

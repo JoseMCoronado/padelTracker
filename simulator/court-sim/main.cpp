@@ -6,6 +6,7 @@
 // Keys:
 //   a / b          Team A / Team B remote press (RemoteCore + radio path)
 //   A / B (shift)  wired backup button press
+//   1 / 2          Team A / Team B remote hold-to-undo (3 s hold)
 //   l              cycle induced packet loss 0% -> 30% -> 60%
 //   p              (on pairing screen) put that team's remote into pairing mode
 //   r              power-cycle the court (journal recovery flow)
@@ -25,9 +26,13 @@
 #include <vector>
 
 #include "lvgl.h"
+#include "padel/application/club_controller.hpp"
 #include "padel/application/court_service.hpp"
+#include "padel/application/roster.hpp"
+#include "padel/application/roster_file.hpp"
 #include "padel/common/log.hpp"
 #include "padel/application/pairing.hpp"
+#include "padel/domain/club_round.hpp"
 #include "padel/persistence/journal.hpp"
 #include "padel/persistence/stdio_file_backend.hpp"
 #include "padel/remote/remote_core.hpp"
@@ -116,6 +121,12 @@ struct SimRemote {
         core->set_button_level(true);
         release_at_ms = now + 60;
     }
+
+    // Long enough for RemoteCore to turn the hold into an undo (ADR-0014).
+    void hold(std::uint64_t now, std::uint32_t ms) {
+        core->set_button_level(true);
+        release_at_ms = now + ms;
+    }
 };
 
 struct App {
@@ -130,6 +141,17 @@ struct App {
     std::unique_ptr<application::CourtService> service;
     std::unique_ptr<FileSettings> court_settings;
     std::unique_ptr<application::PairingService> pairing;
+
+    // Club round: persistent roster + results, controller over the match flow.
+    std::unique_ptr<application::FileRosterStore> roster_store;
+    std::unique_ptr<application::PlayerRoster> roster;
+    std::unique_ptr<application::FileResultsLog> results_log;
+    std::unique_ptr<application::ClubController> club;
+    bool club_active = false;
+    std::string club_hint;
+    std::vector<ui::ClubPlayer> club_suggested_a;
+    std::vector<ui::ClubPlayer> club_suggested_b;
+    std::uint32_t club_suggestion_seq = 0;
 
     SimRemote remote_a{};
     SimRemote remote_b{};
@@ -186,11 +208,17 @@ struct App {
             case remote::FeedbackPattern::CommFailed:
                 log(std::string("remote ") + label + ": FAILED after retries (red)");
                 break;
+            case remote::FeedbackPattern::UndoSent:
+                log(std::string("remote ") + label + ": hold -> undo sent");
+                break;
             case remote::FeedbackPattern::PairingRequired:
                 log(std::string("remote ") + label + ": not paired");
                 break;
             case remote::FeedbackPattern::PairingSuccess:
                 log(std::string("remote ") + label + ": PAIRED (green sequence)");
+                break;
+            case remote::FeedbackPattern::Woke:
+                log(std::string("remote ") + label + ": woke from sleep (press ignored)");
                 break;
         }
     }
@@ -236,6 +264,17 @@ struct App {
     void boot() {
         std::filesystem::create_directories(kDataDir);
         court_settings = std::make_unique<FileSettings>(std::string(kDataDir) + "/pairings.txt");
+
+        // Club roster + results (kept across sim power cycles; an in-flight
+        // club round is RAM-only and is lost, like on real hardware).
+        if (!roster) {
+            roster_store = std::make_unique<application::FileRosterStore>(
+                std::string(kDataDir) + "/roster.txt");
+            roster = std::make_unique<application::PlayerRoster>(*roster_store);
+            results_log = std::make_unique<application::FileResultsLog>(
+                std::string(kDataDir) + "/club_results.csv");
+            club = std::make_unique<application::ClubController>(*results_log, clock);
+        }
         // First run: seed default assignments so the keyboard remotes work
         // out of the box; the pairing flow can re-pair at any time.
         if (court_settings->load_assignments().empty()) {
@@ -305,6 +344,40 @@ struct App {
         boot();
     }
 
+    // --- Club round ----------------------------------------------------------
+    // Leaves an in-flight club round without inventing a new forbidden pair
+    // (finish_round only records Top 2 when the round is Complete).
+    void abandon_club_round() {
+        if (club->round_active()) {
+            club->finish_round();
+        }
+        club_active = false;
+        club_hint.clear();
+    }
+
+    // Starts the mini-set the club controller is waiting on (set 1 or the
+    // mixed set 2) as a normal journaled match with the pairing as team names.
+    void begin_club_set() {
+        const auto teams = club->current_set_teams();
+        settings.team_a_name = teams.team_a;
+        settings.team_b_name = teams.team_b;
+        settings.players_a.clear();
+        settings.players_b.clear();
+        settings.preset_index = ui::kClubRoundPreset;
+
+        if (service->state().lifecycle != domain::MatchLifecycle::NotStarted ||
+            file->size() > 0) {
+            archive_journal();
+            fresh_service(domain::preset_club_mini_set());
+        }
+        if (service->start_match(settings.first_server)) {
+            match_started_ms = clock.now_ms();
+            model.screen = ui::Screen::Live;
+            log("club set " + std::to_string(club->set_number()) + ": " + teams.team_a +
+                " vs " + teams.team_b);
+        }
+    }
+
     // --- UI callbacks --------------------------------------------------------
     ui::UiCallbacks callbacks() {
         ui::UiCallbacks cb{};
@@ -331,6 +404,7 @@ struct App {
             log(winner ? "conflict resolved" : "conflict cancelled");
         };
         cb.start_match = [this](const ui::MatchSettings& s) {
+            abandon_club_round();
             settings = s;
             // A fresh match genesis needs a fresh journal; archive the old
             // one per spec 14.7.
@@ -346,11 +420,15 @@ struct App {
             }
         };
         cb.reset_confirmed = [this]() {
+            abandon_club_round();
             service->reset_match();
             model.screen = ui::Screen::Setup;
             log("match reset (journaled; archived on next start)");
         };
-        cb.new_match = [this]() { model.screen = ui::Screen::Setup; };
+        cb.new_match = [this]() {
+            abandon_club_round();
+            model.screen = ui::Screen::Setup;
+        };
         cb.show_screen = [this](ui::Screen screen) { model.screen = screen; };
         cb.begin_pairing = [this](TeamId team) {
             pairing->begin(team);
@@ -375,6 +453,7 @@ struct App {
                 model.screen = ui::Screen::Live;
                 log("recovery: match resumed");
             } else {
+                abandon_club_round();
                 archive_journal();
                 fresh_service(ui::preset_config(settings.preset_index));
                 model.screen = ui::Screen::Setup;
@@ -382,6 +461,68 @@ struct App {
             }
         };
         cb.test_beep = [this]() { log("BEEP (buzzer test)"); };
+
+        // --- Club round -----------------------------------------------------
+        cb.create_player = [this](const std::string& name) {
+            if (const auto player = roster->add_player(name)) {
+                log("player added: " + player->name);
+            } else {
+                log("player rejected (empty or duplicate): " + name);
+            }
+        };
+        cb.start_club_round = [this](const std::array<ui::ClubPlayer, 4>& picked,
+                                     const ui::MatchSettings& s) {
+            // Setup always means start fresh; orphaned rounds (RESET / NEW
+            // MATCH without finish) must not block the next start.
+            if (club->round_active()) {
+                abandon_club_round();
+            }
+            settings = s;
+            std::array<application::Player, 4> players{};
+            for (std::size_t i = 0; i < 4; ++i) {
+                players[i] = application::Player{picked[i].id, picked[i].name, picked[i].guest};
+            }
+            const auto error = club->start_round(players, static_cast<std::uint32_t>(rng()));
+            if (error == application::ClubController::StartError::ForbiddenPair) {
+                club_hint =
+                    "Last round's Top 2 can't be teammates - put them on opposite sides";
+                log("club round rejected: forbidden pair");
+                return;
+            }
+            if (error == application::ClubController::StartError::DuplicatePlayer) {
+                club_hint = "Same player picked twice - split them up";
+                return;
+            }
+            if (error.has_value()) {
+                club_hint = "A club round is already in progress";
+                return;
+            }
+            club_hint.clear();
+            club_active = true;
+            begin_club_set();
+        };
+        cb.club_next_set = [this]() {
+            if (club_active && club->stage() == domain::ClubStage::Set2) {
+                begin_club_set();
+            }
+        };
+        cb.club_new_round = [this]() {
+            // Capture Top 2 / Bottom 2 before finish_round clears the round.
+            if (ui::suggest_next_round_picks(*club, club_suggested_a, club_suggested_b)) {
+                ++club_suggestion_seq;
+            }
+            club->finish_round();
+            club_active = false;
+            club_hint.clear();
+            model.screen = ui::Screen::Setup;
+            log("club round closed; Top 2 alone on opposite teams (pick partners)");
+        };
+        cb.club_done = [this]() {
+            club->finish_round();
+            club_active = false;
+            club_hint.clear();
+            model.screen = ui::Screen::Setup;
+        };
         return cb;
     }
 
@@ -403,6 +544,14 @@ struct App {
                 } else {
                     remote_b.press(now);
                 }
+                break;
+            case SDLK_1:
+                remote_a.hold(now, 3200);
+                log("remote A: holding to undo");
+                break;
+            case SDLK_2:
+                remote_b.hold(now, 3200);
+                log("remote B: holding to undo");
                 break;
             case SDLK_l:
                 loss_pct = loss_pct == 0 ? 30 : loss_pct == 30 ? 60 : 0;
@@ -450,6 +599,7 @@ struct App {
         rows.push_back({"Duplicates", std::to_string(counters.duplicates)});
         rows.push_back({"Rejected", std::to_string(counters.rejected)});
         rows.push_back({"Conflicts", std::to_string(counters.conflicts)});
+        rows.push_back({"Remote undos", std::to_string(counters.remote_undos)});
         rows.push_back({"Storage failures", std::to_string(counters.storage_failures)});
         rows.push_back({"Dedup accepted/dup/stale",
                         std::to_string(dedup.accepted) + "/" + std::to_string(dedup.duplicates) +
@@ -504,11 +654,27 @@ struct App {
         prev_points_b = points_b;
 
         // Natural completion moves to the match complete screen (edge only,
-        // so REVIEW / CORRECT can go back to the live screen).
+        // so REVIEW / CORRECT can go back to the live screen). In a club
+        // round the finished mini-set feeds the controller instead, and the
+        // flow continues on the mix or standings screen.
         if (state.lifecycle == domain::MatchLifecycle::Completed &&
             prev_lifecycle != domain::MatchLifecycle::Completed &&
             model.screen == ui::Screen::Live) {
-            model.screen = ui::Screen::MatchComplete;
+            if (club_active) {
+                club->on_set_complete(state);
+                if (club->stage() == domain::ClubStage::Set2) {
+                    model.screen = ui::Screen::ClubMix;
+                    log("club set 1 done -> mix: " + club->current_set_teams().team_a + " vs " +
+                        club->current_set_teams().team_b);
+                } else {
+                    model.screen = ui::Screen::ClubStandings;
+                    if (!club->coin_flip_announcement().empty()) {
+                        log(club->coin_flip_announcement());
+                    }
+                }
+            } else {
+                model.screen = ui::Screen::MatchComplete;
+            }
         }
         prev_lifecycle = state.lifecycle;
 
@@ -520,6 +686,10 @@ struct App {
         }
         model.complete = ui::build_complete_model(
             *service, settings, match_started_ms > 0 ? now - match_started_ms : 0);
+        model.club = ui::build_club_model(*roster, *club, club_hint);
+        model.club.suggested_a = club_suggested_a;
+        model.club.suggested_b = club_suggested_b;
+        model.club.suggestion_seq = club_suggestion_seq;
 
         if (model.screen == ui::Screen::Pairing) {
             if (!pairing->active()) {
@@ -670,6 +840,42 @@ int run_tour(App& app, const std::string& out_dir) {
     m.recovery.corrupt_tail = true;
     app.court_ui.render(m);
     if (!settle_and_shoot("08-recovery")) return 1;
+
+    m.club.roster = {{1, "Jose", false},    {2, "Zoe", false},
+                     {3, "William", false}, {4, "Szewei", false},
+                     {5, "Ruxandra", false},{6, "Lewis", false},
+                     {7, "Luigi", false},   {8, "Raymond", false},
+                     {9, "Paulina", false}, {10, "Vineet", false},
+                     {11, "Louis", false},  {12, "Adrien", false}};
+    m.club.setup_hint =
+        "Last round's Top 2 can't be teammates - put them on opposite sides";
+    m.screen = ui::Screen::Setup;
+    app.court_ui.debug_select_preset(ui::kClubRoundPreset);  // MODE = Club round
+    app.court_ui.render(m);
+    if (!settle_and_shoot("09-setup-club-hint")) return 1;
+
+    app.court_ui.debug_open_club_picker(TeamId::A);
+    app.court_ui.render(m);
+    if (!settle_and_shoot("10-club-picker")) return 1;
+    // Leave the modal open state behind before the next screens.
+    m.screen = ui::Screen::Live;
+    app.court_ui.render(m);
+
+    m.screen = ui::Screen::ClubMix;
+    m.club.mix_detail = "ADRIEN & LEWIS took set 1 (3-1)";
+    m.club.mix_team_a = "ADRIEN & LOUIS";
+    m.club.mix_team_b = "LEWIS & LUIGI";
+    app.court_ui.render(m);
+    if (!settle_and_shoot("11-club-mix")) return 1;
+
+    m.screen = ui::Screen::ClubStandings;
+    m.club.standings = {{"1", "Adrien", "2 WINS  +4", true, false},
+                        {"2", "Lewis", "1 WIN  +0", true, true},
+                        {"3", "Louis", "1 WIN  +0", false, false},
+                        {"4", "Luigi", "0 WINS  -4", false, false}};
+    m.club.coin_announcement = "COIN FLIP: LEWIS takes the last TOP 2 spot";
+    app.court_ui.render(m);
+    if (!settle_and_shoot("12-club-standings")) return 1;
 
     return 0;
 }

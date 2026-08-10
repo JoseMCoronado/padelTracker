@@ -39,7 +39,7 @@ void MatchEngine::rebuild() {
     state_ = std::move(state);
 }
 
-std::optional<EventId> MatchEngine::find_undo_target() const {
+std::optional<EventId> MatchEngine::find_undo_target(std::optional<TeamId> only_team) const {
     std::unordered_set<EventId> compensated;
     // Walk backward; stop at match boundaries so undo never resurrects
     // points from before a reset.
@@ -52,8 +52,14 @@ std::optional<EventId> MatchEngine::find_undo_target() const {
             compensated.insert(undo->undone_event_id);
             continue;
         }
-        if (std::holds_alternative<PointAwarded>(it->payload) &&
-            compensated.count(it->id) == 0) {
+        if (const auto* point = std::get_if<PointAwarded>(&it->payload);
+            point != nullptr && compensated.count(it->id) == 0) {
+            // Only the newest point is ever undoable. A team-scoped undo
+            // refuses here rather than reaching past the opponents' point,
+            // which would silently rewrite a score nobody was looking at.
+            if (only_team && point->team != *only_team) {
+                return std::nullopt;
+            }
             return it->id;
         }
     }
@@ -61,7 +67,7 @@ std::optional<EventId> MatchEngine::find_undo_target() const {
 }
 
 std::optional<PointAwarded> MatchEngine::next_undo_target() const {
-    const std::optional<EventId> target = find_undo_target();
+    const std::optional<EventId> target = find_undo_target(std::nullopt);
     if (!target) {
         return std::nullopt;
     }
@@ -95,8 +101,8 @@ MatchEngine::DecideResult MatchEngine::decide(const AwardPoint& cmd) const {
     return DecideResult::ok(make_decided(PointAwarded{cmd.team, cmd.source}));
 }
 
-MatchEngine::DecideResult MatchEngine::decide(const UndoLastScoringAction&) const {
-    const std::optional<EventId> target = find_undo_target();
+MatchEngine::DecideResult MatchEngine::decide(const UndoLastScoringAction& cmd) const {
+    const std::optional<EventId> target = find_undo_target(cmd.only_team);
     if (!target) {
         return DecideResult::err(CommandError::NothingToUndo);
     }

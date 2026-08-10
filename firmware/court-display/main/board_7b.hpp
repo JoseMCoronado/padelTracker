@@ -1,11 +1,9 @@
 // Board profile for the Waveshare ESP32-S3-Touch-LCD-7B (1024x600 RGB
-// panel, GT911 touch, CH422G IO expander).
+// panel, GT911 touch, CH32V003 "IO EXTENSION" expander at I2C 0x24).
 //
-// *** UNVERIFIED UNTIL HARDWARE ***
 // Pins are transcribed from the vendor wiki pinout table; RGB timings are
-// the community-confirmed set for this panel (16 MHz PCLK). Bring-up day
-// only touches this module: verify the vendor demo first, then diff these
-// values against it.
+// the community-confirmed set for this panel (16 MHz PCLK), both verified
+// on hardware.
 #pragma once
 
 #include "lvgl.h"
@@ -21,7 +19,7 @@ constexpr int kVRes = 600;
 // Returns false when a step fails (fault is logged).
 bool init_display(void);
 
-// Backlight control via the CH422G expander (EXIO2 = DISP).
+// Backlight control via the IO extension (EXIO2 = DISP).
 void set_backlight(bool on);
 
 }  // namespace board

@@ -32,6 +32,8 @@ protocol::AckStatus rejection_ack_status(domain::CommandError error) {
     switch (error) {
         case domain::CommandError::MatchPausedError:
             return protocol::AckStatus::RejectedPaused;
+        case domain::CommandError::NothingToUndo:
+            return protocol::AckStatus::RejectedNothingToUndo;
         case domain::CommandError::MatchNotStarted:
         case domain::CommandError::MatchCompleted:
         case domain::CommandError::MatchNotActive:
@@ -291,6 +293,11 @@ void CourtService::handle_point_intent(const protocol::PointIntentPacket& packet
             return;
     }
 
+    if (packet.action == protocol::Action::UndoLastPoint) {
+        handle_undo_intent(intent, packet.team);
+        return;
+    }
+
     // Reject before parking: a press while paused/finished must not sit in
     // the window and commit later.
     if (const auto dry_run = engine_.decide(domain::AwardPoint{packet.team, InputSource::Remote});
@@ -351,6 +358,35 @@ void CourtService::handle_point_intent(const protocol::PointIntentPacket& packet
 
     pending_ = PendingPress{packet.team, InputSource::Remote, intent,
                             clock_.now_ms() + config_.conflict_window_ms};
+}
+
+void CourtService::handle_undo_intent(const protocol::IntentIdentity& intent, TeamId team) {
+    // While a press is parked or a conflict is unresolved, the score the
+    // player is reacting to is not settled yet; taking a point back now would
+    // race the commit that is about to land.
+    if (conflict_ || pending_) {
+        ++counters_.rejected;
+        // Remembered so a retry of this identity gets the same terminal
+        // answer instead of succeeding once the window happens to expire.
+        remember_conflicted(intent);
+        enqueue_ack(intent, protocol::AckStatus::RejectedConflict);
+        return;
+    }
+
+    const auto result = undo_last_scoring_action(team, InputSource::Remote);
+    if (!result) {
+        ++counters_.rejected;
+        enqueue_ack(intent, result.error() == ServiceError::StorageFailure
+                                ? protocol::AckStatus::ErrorStorage
+                                : protocol::AckStatus::RejectedNothingToUndo);
+        return;
+    }
+    // Recording only after a durable append means a retry of a lost ACK
+    // re-ACKs as a duplicate instead of undoing a second point.
+    dedup_.record(intent);
+    ++counters_.accepted;
+    ++counters_.remote_undos;
+    enqueue_ack(intent, protocol::AckStatus::Accepted);
 }
 
 // --- Local point path -------------------------------------------------------
@@ -497,10 +533,12 @@ Result<EventId, ServiceError> CourtService::start_match(TeamId initial_serving_t
     return result;
 }
 
-Result<EventId, ServiceError> CourtService::undo_last_scoring_action() {
-    auto result = run_command(domain::UndoLastScoringAction{}, InputSource::TouchscreenAdmin);
+Result<EventId, ServiceError> CourtService::undo_last_scoring_action(
+    std::optional<TeamId> only_team, InputSource source) {
+    auto result = run_command(domain::UndoLastScoringAction{source, only_team}, source);
     if (result) {
-        logging::emit(logging::Level::Info, "match.undo", "rev=%llu",
+        logging::emit(logging::Level::Info, "match.undo", "team=%s rev=%llu",
+                      only_team ? (*only_team == TeamId::A ? "A" : "B") : "any",
                       static_cast<unsigned long long>(engine_.state().revision));
     }
     return result;

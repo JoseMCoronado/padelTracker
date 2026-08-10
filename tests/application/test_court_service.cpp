@@ -27,6 +27,12 @@ protocol::PointIntentPacket intent(RemoteId remote, TeamId team, std::uint32_t s
     return packet;
 }
 
+protocol::PointIntentPacket undo_intent(RemoteId remote, TeamId team, std::uint32_t seq) {
+    protocol::PointIntentPacket packet = intent(remote, team, seq);
+    packet.action = protocol::Action::UndoLastPoint;
+    return packet;
+}
+
 struct Fixture {
     FakeClock clock{};
     FakeEventStore store{};
@@ -99,6 +105,94 @@ TEST_CASE("retry while the press is still parked in the window is silent") {
     f.expire_window();
     REQUIRE(f.acks().size() == 1);
     CHECK(f.points_a() == 1);
+}
+
+TEST_CASE("remote undo takes back the team's own point") {
+    Fixture f;
+    f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 1));
+    f.expire_window();
+    f.acks();
+    REQUIRE(f.points_a() == 1);
+
+    f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 2));
+    const auto acks = f.acks();
+    REQUIRE(acks.size() == 1);
+    CHECK(acks[0].status == protocol::AckStatus::Accepted);
+    CHECK(f.points_a() == 0);
+    CHECK(f.service.counters().remote_undos == 1);
+}
+
+TEST_CASE("remote undo cannot reverse the opposing team's point") {
+    Fixture f;
+    f.service.handle_point_intent(intent(kRemoteB, TeamId::B, 1));
+    f.expire_window();
+    f.acks();
+    REQUIRE(f.points_b() == 1);
+
+    f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 1));
+    const auto acks = f.acks();
+    REQUIRE(acks.size() == 1);
+    CHECK(acks[0].status == protocol::AckStatus::RejectedNothingToUndo);
+    CHECK(f.points_b() == 1);
+    CHECK(f.service.counters().remote_undos == 0);
+}
+
+TEST_CASE("remote undo with nothing to undo is rejected, not silently accepted") {
+    Fixture f;
+    f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 1));
+    const auto acks = f.acks();
+    REQUIRE(acks.size() == 1);
+    CHECK(acks[0].status == protocol::AckStatus::RejectedNothingToUndo);
+}
+
+TEST_CASE("a retried undo re-ACKs as duplicate instead of undoing twice") {
+    Fixture f;
+    f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 1));
+    f.expire_window();
+    f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 2));
+    f.expire_window();
+    f.acks();
+    REQUIRE(f.points_a() == 2);
+
+    f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 3));
+    for (int retry = 0; retry < 3; ++retry) {
+        f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 3));
+    }
+    const auto acks = f.acks();
+    REQUIRE(acks.size() == 4);
+    CHECK(acks[0].status == protocol::AckStatus::Accepted);
+    for (std::size_t i = 1; i < acks.size(); ++i) {
+        CHECK(acks[i].status == protocol::AckStatus::DuplicateAccepted);
+    }
+    CHECK(f.points_a() == 1);
+}
+
+TEST_CASE("remote undo is refused while a press is parked or a conflict is open") {
+    Fixture f;
+    f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 1));
+    f.expire_window();
+    f.acks();
+
+    // A press is now parked in the window: the score is not settled.
+    f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 2));
+    f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 3));
+    const auto acks = f.acks();
+    REQUIRE(acks.size() == 1);
+    CHECK(acks[0].status == protocol::AckStatus::RejectedConflict);
+    CHECK(acks[0].identity.sequence == 3);
+}
+
+TEST_CASE("remote undo is journaled as a remote-sourced action") {
+    Fixture f;
+    f.service.handle_point_intent(intent(kRemoteA, TeamId::A, 1));
+    f.expire_window();
+    f.acks();
+
+    f.service.handle_point_intent(undo_intent(kRemoteA, TeamId::A, 2));
+    REQUIRE(f.acks().size() == 1);
+    REQUIRE_FALSE(f.store.events.empty());
+    CHECK(f.store.events.back().source == InputSource::Remote);
+    CHECK(std::holds_alternative<domain::ScoringActionUndone>(f.store.events.back().payload));
 }
 
 TEST_CASE("rejection mapping: unpaired, wrong team, wrong court") {

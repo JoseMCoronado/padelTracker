@@ -3,6 +3,7 @@
 // no visible label escapes the screen bounds.
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
 #include <vector>
 
 #include "lvgl.h"
@@ -15,6 +16,12 @@ namespace {
 
 constexpr int kWidth = 1024;
 constexpr int kHeight = 600;
+
+// Scripted pointer "touch" for interaction tests.
+struct {
+    lv_point_t point{0, 0};
+    bool pressed = false;
+} s_pointer;
 
 std::vector<lv_color_t>& framebuffer() {
     static std::vector<lv_color_t> buf(static_cast<std::size_t>(kWidth) * kHeight);
@@ -35,6 +42,16 @@ void ensure_lvgl() {
             lv_disp_flush_ready(d);
         };
         lv_disp_drv_register(&driver);
+
+        static lv_indev_drv_t indev_drv;
+        lv_indev_drv_init(&indev_drv);
+        indev_drv.type = LV_INDEV_TYPE_POINTER;
+        indev_drv.read_cb = [](lv_indev_drv_t*, lv_indev_data_t* data) {
+            data->point = s_pointer.point;
+            data->state = s_pointer.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+        };
+        lv_indev_drv_register(&indev_drv);
+
         ui::init_theme();
         return true;
     }();
@@ -147,6 +164,23 @@ ui::UiModel stress_model(ui::Screen screen) {
     m.recovery.message = "A match was in progress when power was lost.";
     m.recovery.detail = "Journal: 214 events recovered, tail damaged (truncated).";
     m.recovery.corrupt_tail = true;
+
+    m.club.roster = {{1, "Jose", false},
+                     {2, "Zoe", false},
+                     {3, "William", false},
+                     {4, "Szewei", false},
+                     {5, "Lewis", false},
+                     {6, "Luigi", false},
+                     {7, "Maximiliano Alejandro Rodriguez", false}};
+    m.club.setup_hint = "ADRIEN & LEWIS were Top 2 last round - split them up";
+    m.club.mix_detail = "MAXIMILIANO ALEJANDRO & LEWIS took set 1 (3-2)";
+    m.club.mix_team_a = "MAXIMILIANO ALEJANDRO & LOUIS";
+    m.club.mix_team_b = "LEWIS & LUIGI";
+    m.club.standings = {{"1", "Maximiliano Alejandro Rodriguez", "2 WINS  +4", true, false},
+                        {"2", "Lewis", "1 WIN  +0", true, true},
+                        {"3", "Louis", "1 WIN  +0", false, false},
+                        {"4", "Luigi", "0 WINS  -4", false, false}};
+    m.club.coin_announcement = "COIN FLIP: LEWIS takes the last TOP 2 spot";
     return m;
 }
 
@@ -155,7 +189,8 @@ ui::UiModel stress_model(ui::Screen screen) {
 TEST_CASE("every screen renders at 1024x600 with stress content, labels in bounds") {
     const ui::Screen screens[] = {ui::Screen::Setup,        ui::Screen::Live,
                                   ui::Screen::MatchComplete, ui::Screen::Pairing,
-                                  ui::Screen::Diagnostics,   ui::Screen::Recovery};
+                                  ui::Screen::Diagnostics,   ui::Screen::Recovery,
+                                  ui::Screen::ClubMix,       ui::Screen::ClubStandings};
     for (const ui::Screen screen : screens) {
         INFO("screen index: " << static_cast<int>(screen));
         court_ui().render(stress_model(screen));
@@ -163,6 +198,167 @@ TEST_CASE("every screen renders at 1024x600 with stress content, labels in bound
         require_labels_in_bounds();
         require_screen_painted();
     }
+}
+
+TEST_CASE("setup screen fits vertically in both modes: bottom bar on screen") {
+    const auto check_bottom_bar = [](const char* start_text) {
+        std::vector<lv_obj_t*> labels;
+        collect_labels(lv_scr_act(), labels);
+        int checked = 0;
+        for (lv_obj_t* label : labels) {
+            const std::string text = lv_label_get_text(label);
+            // The bottom action bar is the lowest content; if it fits, the
+            // whole non-scrollable setup screen fits.
+            if (text.find(start_text) != std::string::npos ||
+                text.find("DIAGNOSTICS") != std::string::npos) {
+                lv_area_t coords;
+                lv_obj_get_coords(label, &coords);
+                INFO("label text: " << text);
+                CHECK(coords.y1 >= 0);
+                CHECK(coords.y2 < kHeight);
+                ++checked;
+            }
+        }
+        CHECK(checked == 2);
+    };
+
+    court_ui().render(stress_model(ui::Screen::Setup));
+    settle();
+    check_bottom_bar("START MATCH");
+
+    // Club round mode adds the player-pick row; it must fit too.
+    court_ui().debug_select_preset(ui::kClubRoundPreset);
+    court_ui().render(stress_model(ui::Screen::Setup));
+    settle();
+    check_bottom_bar("START CLUB ROUND");
+
+    court_ui().debug_select_preset(0);  // leave standard mode for later tests
+}
+
+TEST_CASE("club player picker modal builds, filters render, tiles in bounds") {
+    ui::UiModel m = stress_model(ui::Screen::Setup);
+    court_ui().render(m);
+    settle();
+
+    court_ui().debug_open_club_picker(TeamId::A);
+    court_ui().render(m);  // refresh with the roster while the modal is open
+    settle();
+    require_labels_in_bounds();
+    require_screen_painted();
+
+    court_ui().debug_open_club_picker(TeamId::B);
+    settle();
+    require_labels_in_bounds();
+}
+
+TEST_CASE("tapping a roster tile selects the player despite continuous re-renders") {
+    ui::UiModel m = stress_model(ui::Screen::Setup);
+    court_ui().render(m);
+    settle();
+    court_ui().debug_open_club_picker(TeamId::A);
+    settle();
+
+    const auto find_label = [](const char* text) -> lv_obj_t* {
+        std::vector<lv_obj_t*> labels;
+        collect_labels(lv_scr_act(), labels);
+        for (lv_obj_t* label : labels) {
+            if (std::string(lv_label_get_text(label)) == text) {
+                return label;
+            }
+        }
+        return nullptr;
+    };
+
+    lv_obj_t* lewis_label = find_label("LEWIS");
+    REQUIRE(lewis_label != nullptr);
+    lv_area_t coords;
+    lv_obj_get_coords(lv_obj_get_parent(lewis_label), &coords);
+    s_pointer.point.x = (coords.x1 + coords.x2) / 2;
+    s_pointer.point.y = (coords.y1 + coords.y2) / 2;
+
+    // Press-hold-release while the host keeps re-rendering the same model
+    // every frame (this is what the sim and firmware do; a grid rebuild
+    // during the press deletes the tile and swallows the tap).
+    const auto pump = [&] {
+        for (int i = 0; i < 6; ++i) {
+            lv_tick_inc(16);
+            lv_timer_handler();
+            court_ui().render(m);
+        }
+    };
+    s_pointer.pressed = true;
+    pump();
+    s_pointer.pressed = false;
+    pump();
+
+    CHECK(find_label("1 / 2 picked") != nullptr);
+
+    // Tap again: deselects.
+    s_pointer.pressed = true;
+    pump();
+    s_pointer.pressed = false;
+    pump();
+    CHECK(find_label("0 / 2 picked") != nullptr);
+}
+
+TEST_CASE("picked players replace an unchanged generic team name at start") {
+    ui::UiModel m = stress_model(ui::Screen::Setup);
+    court_ui().render(m);
+    settle();
+    court_ui().debug_open_club_picker(TeamId::A);
+    settle();
+
+    const auto find_label = [](const char* text) -> lv_obj_t* {
+        std::vector<lv_obj_t*> labels;
+        collect_labels(lv_scr_act(), labels);
+        for (lv_obj_t* label : labels) {
+            if (std::string(lv_label_get_text(label)) == text) {
+                return label;
+            }
+        }
+        return nullptr;
+    };
+    const auto tap = [&](const char* text) {
+        lv_obj_t* label = find_label(text);
+        REQUIRE(label != nullptr);
+        lv_area_t coords;
+        lv_obj_get_coords(lv_obj_get_parent(label), &coords);
+        s_pointer.point.x = (coords.x1 + coords.x2) / 2;
+        s_pointer.point.y = (coords.y1 + coords.y2) / 2;
+        const auto pump = [&] {
+            for (int i = 0; i < 6; ++i) {
+                lv_tick_inc(16);
+                lv_timer_handler();
+                court_ui().render(m);
+            }
+        };
+        s_pointer.pressed = true;
+        pump();
+        s_pointer.pressed = false;
+        pump();
+    };
+
+    tap("LEWIS");
+    tap("LUIGI");
+    tap(LV_SYMBOL_OK " DONE");
+
+    // Team A's field was left at the generic default, so the picked names
+    // become the team header (club-style format); Team B had no picks and
+    // keeps its default.
+    const ui::MatchSettings settings = court_ui().debug_read_settings();
+    CHECK(settings.team_a_name == "LEWIS & LUIGI");
+    CHECK(settings.players_a.empty());
+    CHECK(settings.team_b_name == "TEAM B");
+    CHECK(settings.players_b.empty());
+
+    // Deselect so later tests start from a clean picker state; with no
+    // picks the generic name stays.
+    court_ui().debug_open_club_picker(TeamId::A);
+    settle();
+    tap("LEWIS");
+    tap("LUIGI");
+    tap(LV_SYMBOL_OK " DONE");
+    CHECK(court_ui().debug_read_settings().team_a_name == "TEAM A");
 }
 
 TEST_CASE("special scoring states render distinct label text") {

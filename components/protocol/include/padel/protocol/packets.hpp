@@ -22,6 +22,10 @@ enum class MessageType : std::uint8_t {
 
 enum class Action : std::uint8_t {
     AwardPoint = 0x01,
+    // Take back the sending team's most recent point (ADR-0014). Shares the
+    // POINT_INTENT frame so it inherits the sequence identity, deduplication
+    // and retry machinery that make the award path exactly-once.
+    UndoLastPoint = 0x02,
 };
 
 // Terminal statuses a remote can receive (spec section 10.2).
@@ -35,6 +39,7 @@ enum class AckStatus : std::uint8_t {
     RejectedConflict = 7,
     RejectedInvalidPacket = 8,
     ErrorStorage = 9,
+    RejectedNothingToUndo = 10,
 };
 
 enum class ProtocolError : std::uint8_t {

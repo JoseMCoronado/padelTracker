@@ -989,7 +989,8 @@ stateDiagram-v2
     RejectedFeedback --> Ready
     FailureFeedback --> Ready
     Ready --> Sleep: inactivity timeout
-    Sleep --> Boot: GPIO button wake
+    PairingRequired --> Sleep: inactivity timeout
+    Sleep --> Boot: GPIO button wake (press does not score)
 ```
 
 ## 11.2 Button behavior
@@ -1032,14 +1033,18 @@ Feedback patterns MUST be centralized in one module, not duplicated across handl
 
 Implementation order:
 
-1. Reliable always-awake remote on USB.
-2. Reliable battery-powered remote with light/modem sleep.
-3. Deep sleep after inactivity with button wake.
-4. Current measurement and runtime optimization.
+1. Reliable always-awake remote on USB. **Done** (2026-08-05, both units).
+2. Reliable battery-powered remote with light/modem sleep. **Open.**
+3. Deep sleep after inactivity with button wake. **Done** — see ADR-0015.
+4. Current measurement and runtime optimization. **Open.**
 
 Do not optimize sleep before packet/ACK reliability is tested.
 
-When using XIAO ESP32-C3 deep sleep, choose a wake-capable pin verified against official documentation and the actual board. Record it in `docs/HARDWARE_PINOUT.md`.
+Step 3 was taken before step 2 deliberately: standby drain is the failure mode that actually strands a remote, and a deep-sleep wake is a reboot, a path already proven safe by the NVS sequence baseline and the deduplicator's fresh-`boot_id` rule. Step 2 remains worthwhile because it extends runtime *during* a match rather than between sessions.
+
+Per ADR-0015, the press that ends deep sleep wakes the remote and does not score. A wake takes longer than a typical tap, so inferring a point from the wake cause would let an accidental knock in storage add one silently.
+
+When using XIAO ESP32-C3 deep sleep, choose a wake-capable pin verified against official documentation and the actual board. Record it in `docs/HARDWARE_PINOUT.md`. Verified: GPIO0-5 only (`SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK`), and the point button on GPIO3 / pad D1 qualifies.
 
 ## 11.5 Remote persistence
 

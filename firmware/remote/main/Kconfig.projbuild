@@ -23,4 +23,24 @@ config PADEL_REMOTE_LED_GPIO
         External feedback LED (the XIAO ESP32-C3 has no user LED on board).
         Default GPIO10 = pad D10. Active high.
 
+config PADEL_REMOTE_SLEEP_ENABLE
+    bool "Deep sleep after inactivity"
+    default y
+    help
+        Deep sleep once remote_core reports nothing outstanding for
+        PADEL_REMOTE_SLEEP_TIMEOUT_S, waking on the point button (spec 11.4
+        step 3). Requires the button to sit on GPIO0-5, the only pins that
+        can wake an ESP32-C3 from deep sleep. Turn this off for bench work:
+        a sleeping remote drops off the serial monitor.
+
+config PADEL_REMOTE_SLEEP_TIMEOUT_S
+    int "Inactivity timeout before deep sleep (seconds)"
+    depends on PADEL_REMOTE_SLEEP_ENABLE
+    range 5 86400
+    default 900
+    help
+        Idle time before the remote sleeps. The default 15 minutes is far
+        longer than any gap between points, so it only triggers between
+        sessions. Shorten it to exercise sleep/wake cycles on the bench.
+
 endmenu

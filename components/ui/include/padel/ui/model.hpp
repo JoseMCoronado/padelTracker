@@ -17,6 +17,8 @@ enum class Screen : std::uint8_t {
     Pairing,
     Diagnostics,
     Recovery,
+    ClubMix,        // between club mini-sets: announce the mixed teams
+    ClubStandings,  // after set 2: standings, top2/bottom2, coin flip
 };
 
 // Organizer-editable match settings (setup screen, spec 14.4). Lives in the
@@ -31,9 +33,14 @@ struct MatchSettings {
     TeamId first_server = TeamId::A;
 };
 
-// Preset labels shown on the setup screen, index-aligned with
-// build-side preset selection (spec 14.4).
+// Mode labels shown on the setup screen (MODE dropdown), index-aligned with
+// build-side preset selection (spec 14.4). "Club round" is a mode, not just
+// a scoring preset: it enables the player pickers and the round flow.
 const std::vector<std::string>& preset_names();
+
+// Index of the club round entry in preset_names(); its scoring config is
+// the club mini-set (first to 3).
+inline constexpr int kClubRoundPreset = 4;
 
 struct TeamPanelModel {
     std::string name;
@@ -91,6 +98,44 @@ struct RecoveryViewModel {
     bool corrupt_tail = false;
 };
 
+// --- Club round --------------------------------------------------------------
+
+// A pickable player tile. Members come from the persisted roster; guests are
+// minted inside the picker (sentinel ids, never persisted).
+struct ClubPlayer {
+    std::uint32_t id = 0;
+    std::string name;
+    bool guest = false;
+};
+
+struct ClubStandingRowModel {
+    std::string rank;    // "1".."4"
+    std::string name;
+    std::string record;  // "2 WINS  +4"
+    bool top2 = false;
+    bool coin = false;   // this spot came from the automatic coin flip
+};
+
+struct ClubViewModel {
+    std::vector<ClubPlayer> roster;   // members for the picker grid
+    std::string setup_hint;           // forbidden-pair / validation message, or ""
+
+    // Mix screen (after set 1).
+    std::string mix_detail;           // "JOSE & ZOE took set 1 (3-1)"
+    std::string mix_team_a;           // set 2 pairing
+    std::string mix_team_b;
+
+    // Standings screen (after set 2).
+    std::vector<ClubStandingRowModel> standings;
+    std::string coin_announcement;    // "" when the differential decided it
+
+    // NEW ROUND suggestion: Setup applies when suggestion_seq advances.
+    // Only the Top 2 — one on Team A, one on Team B; partners left empty.
+    std::vector<ClubPlayer> suggested_a;
+    std::vector<ClubPlayer> suggested_b;
+    std::uint32_t suggestion_seq = 0;
+};
+
 // Everything the renderer needs for one frame.
 struct UiModel {
     Screen screen = Screen::Setup;
@@ -100,6 +145,7 @@ struct UiModel {
     PairingViewModel pairing{};
     DiagnosticsViewModel diagnostics{};
     RecoveryViewModel recovery{};
+    ClubViewModel club{};
 };
 
 }  // namespace padel::ui

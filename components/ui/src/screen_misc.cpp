@@ -37,7 +37,7 @@ void CompleteScreen::create(Shared* shared_state) {
 
     lv_obj_t* column = centered_column(root);
 
-    winner_label = make_label(column, tokens::font_score(), tokens::success());
+    winner_label = make_label(column, tokens::font_banner(), tokens::success());
     lv_label_set_long_mode(winner_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(winner_label, LV_PCT(100));
     lv_obj_set_style_text_align(winner_label, LV_TEXT_ALIGN_CENTER, 0);

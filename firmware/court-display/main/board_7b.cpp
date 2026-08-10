@@ -35,13 +35,20 @@ constexpr gpio_num_t kPinTouchSda = GPIO_NUM_8;
 constexpr gpio_num_t kPinTouchScl = GPIO_NUM_9;
 constexpr gpio_num_t kPinTouchIrq = GPIO_NUM_4;
 
-// CH422G IO expander lines (EXIOx).
+// IO EXTENSION (CH32V003) lines (EXIOx), per the 7B wiki pin table.
 constexpr uint8_t kExioTouchReset = 1 << 1;  // TP_RST
-constexpr uint8_t kExioBacklight = 1 << 2;   // DISP
-constexpr uint8_t kExioLcdVddEn = 1 << 6;    // LCD_VDD_EN
+constexpr uint8_t kExioBacklight = 1 << 2;   // DISP (backlight enable)
+constexpr uint8_t kExioLcdReset = 1 << 3;    // LCD_RST - panel shows backlight-only
+                                             // white when held low (not in the wiki
+                                             // pin table, confirmed on hardware)
+constexpr uint8_t kExioSdCs = 1 << 4;        // TF card CS, active low - keep high
+constexpr uint8_t kExioUsbSel = 1 << 5;      // low = USB mode, high = CAN
+constexpr uint8_t kExioLcdVddEn = 1 << 6;    // LCD_VDD_EN (panel VCOM power)
 
-// Community-confirmed timings for the 7B's 1024x600 panel.
-constexpr uint32_t kPclkHz = 16 * 1000 * 1000;
+// Timings straight from Waveshare's 7B demo (rgb_lcd_port.h). PCLK must be
+// 30 MHz: 16 MHz gave a ~17 Hz refresh, slow enough for a faint whole-panel
+// inversion flicker (seen on hardware).
+constexpr uint32_t kPclkHz = 30 * 1000 * 1000;
 constexpr uint32_t kHsyncPulse = 162;
 constexpr uint32_t kHsyncBackPorch = 152;
 constexpr uint32_t kHsyncFrontPorch = 48;
@@ -49,33 +56,49 @@ constexpr uint32_t kVsyncPulse = 45;
 constexpr uint32_t kVsyncBackPorch = 13;
 constexpr uint32_t kVsyncFrontPorch = 3;
 
-// --- CH422G ---------------------------------------------------------------
-// Minimal driver: the chip maps registers onto distinct I2C addresses.
-// WR_SET (0x24) configures the chip (bit0 = IO_OE, push-pull outputs on
-// IO0..7); WR_IO (0x38) sets the output byte.
+// --- IO EXTENSION (CH32V003) ------------------------------------------------
+// The 7B's "IO EXTENSION" is a CH32V003 microcontroller at address 0x24
+// speaking a normal register protocol (NOT the CH422G used on older Waveshare
+// boards, whose registers live at distinct I2C addresses):
+//   0x02 direction (1 = output), 0x03 output levels, 0x04 input readback,
+//   0x05 backlight PWM duty (0-255, keep <= 247), 0x06 ADC.
+// The duty register is volatile: on a cold boot the backlight stays dark
+// until it is written, even with DISP (EXIO2) high.
 
-constexpr uint8_t kCh422gRegWrSet = 0x24;
-constexpr uint8_t kCh422gRegWrIo = 0x38;
+constexpr uint8_t kIoExtAddress = 0x24;
+constexpr uint8_t kIoExtRegDirection = 0x02;
+constexpr uint8_t kIoExtRegOutput = 0x03;
+constexpr uint8_t kIoExtRegInput = 0x04;
+constexpr uint8_t kIoExtRegPwm = 0x05;
+// NOTE: do not write the PWM register (0x05). Waveshare's LCD demo never
+// touches it and the backlight runs steady at full brightness; writing it
+// engages the chip's slow PWM mode, which flickers visibly (observed on
+// hardware with duty 128 and 0 alike, until a full power cycle).
 
 i2c_master_bus_handle_t s_i2c_bus = nullptr;
+i2c_master_dev_handle_t s_ioext = nullptr;
 uint8_t s_exio_state = 0;
 
-bool ch422g_write(uint8_t reg_addr, uint8_t value) {
-    i2c_device_config_t device_config{};
-    device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-    device_config.device_address = reg_addr;
-    device_config.scl_speed_hz = 400 * 1000;
-    i2c_master_dev_handle_t device = nullptr;
-    if (i2c_master_bus_add_device(s_i2c_bus, &device_config, &device) != ESP_OK) {
-        return false;
+bool ioext_write(uint8_t reg, uint8_t value) {
+    const uint8_t frame[2] = {reg, value};
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 0; attempt < 3 && err != ESP_OK; ++attempt) {
+        err = i2c_master_transmit(s_ioext, frame, sizeof(frame), 100);
+        if (err != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
-    const esp_err_t err = i2c_master_transmit(device, &value, 1, 100);
-    i2c_master_bus_rm_device(device);
+    // The CH32V003 firmware needs a beat between transactions.
+    vTaskDelay(pdMS_TO_TICKS(2));
     return err == ESP_OK;
 }
 
+bool ioext_read(uint8_t reg, uint8_t* out) {
+    return i2c_master_transmit_receive(s_ioext, &reg, 1, out, 1, 100) == ESP_OK;
+}
+
 bool exio_apply() {
-    return ch422g_write(kCh422gRegWrIo, s_exio_state);
+    return ioext_write(kIoExtRegOutput, s_exio_state);
 }
 
 // --- LVGL glue --------------------------------------------------------------
@@ -124,19 +147,63 @@ bool init_expander_and_power() {
         return false;
     }
 
-    if (!ch422g_write(kCh422gRegWrSet, 0x01)) {  // IO_OE: push-pull outputs
-        ESP_LOGE(TAG, "CH422G not responding");
+    if (i2c_master_probe(s_i2c_bus, kIoExtAddress, 100) != ESP_OK) {
+        ESP_LOGE(TAG, "IO extension (CH32V003) not responding at 0x24");
+        return false;
+    }
+    i2c_device_config_t device_config{};
+    device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    device_config.device_address = kIoExtAddress;
+    device_config.scl_speed_hz = 100 * 1000;
+    if (i2c_master_bus_add_device(s_i2c_bus, &device_config, &s_ioext) != ESP_OK) {
+        ESP_LOGE(TAG, "IO extension: add device failed");
         return false;
     }
 
-    // Panel power + backlight on, touch controller held in reset...
-    s_exio_state = kExioLcdVddEn | kExioBacklight;
-    exio_apply();
+    if (!ioext_write(kIoExtRegDirection, 0xFF)) {  // all EXIO pins as outputs
+        ESP_LOGE(TAG, "IO extension: direction write failed");
+        return false;
+    }
+
+    // Panel power on with the panel briefly held in reset; touch also held in
+    // reset, USB_SEL low (USB mode), TF card deselected.
+    s_exio_state = kExioLcdVddEn | kExioBacklight | kExioSdCs;
+    if (!exio_apply()) {
+        ESP_LOGE(TAG, "IO extension: output write failed (0x%02X)", s_exio_state);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+    // Release the panel reset once its power rail is up.
+    s_exio_state |= kExioLcdReset;
+    if (!exio_apply()) {
+        ESP_LOGE(TAG, "IO extension: LCD reset release failed (0x%02X)", s_exio_state);
+    }
     vTaskDelay(pdMS_TO_TICKS(100));
-    // ...then released. INT is low during reset, selecting I2C address 0x5D.
+
+    // Drive INT low while releasing reset so the GT911 latches I2C address
+    // 0x5D (floating INT at reset release can select 0x14 instead).
+    gpio_config_t int_low{};
+    int_low.pin_bit_mask = 1ULL << kPinTouchIrq;
+    int_low.mode = GPIO_MODE_OUTPUT;
+    gpio_config(&int_low);
+    gpio_set_level(kPinTouchIrq, 0);
+
     s_exio_state |= kExioTouchReset;
-    exio_apply();
+    if (!exio_apply()) {
+        ESP_LOGE(TAG, "IO extension: touch still held in reset (0x%02X)", s_exio_state);
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+    // Hand INT back to the touch driver (it reconfigures it as an input).
+    gpio_reset_pin(kPinTouchIrq);
     vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Verify the expander outputs actually latched what we wrote.
+    uint8_t io_state = 0;
+    if (ioext_read(kIoExtRegInput, &io_state)) {
+        ESP_LOGI(TAG, "IO extension readback: wrote 0x%02X, pins read 0x%02X %s",
+                 s_exio_state, io_state, io_state == s_exio_state ? "(MATCH)" : "(MISMATCH)");
+    } else {
+        ESP_LOGE(TAG, "IO extension readback failed (reg 0x04)");
+    }
     return true;
 }
 
@@ -177,18 +244,19 @@ bool init_panel() {
     return true;
 }
 
-bool init_touch() {
+bool init_touch_at(uint16_t dev_addr) {
     // Same values as ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG(); that macro's
     // designator order is not valid C++.
     esp_lcd_panel_io_i2c_config_t io_config{};
-    io_config.dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS;
+    io_config.dev_addr = dev_addr;
+    io_config.scl_speed_hz = 100 * 1000;
     io_config.control_phase_bytes = 1;
     io_config.dc_bit_offset = 0;
     io_config.lcd_cmd_bits = 16;
     io_config.flags.disable_control_phase = 1;
     esp_lcd_panel_io_handle_t io = nullptr;
     if (esp_lcd_new_panel_io_i2c(s_i2c_bus, &io_config, &io) != ESP_OK) {
-        ESP_LOGE(TAG, "touch panel io failed");
+        ESP_LOGE(TAG, "touch panel io failed (addr 0x%02X)", dev_addr);
         return false;
     }
 
@@ -198,10 +266,25 @@ bool init_touch() {
     touch_config.rst_gpio_num = GPIO_NUM_NC;  // reset is on the expander
     touch_config.int_gpio_num = kPinTouchIrq;
     if (esp_lcd_touch_new_i2c_gt911(io, &touch_config, &s_touch) != ESP_OK) {
-        ESP_LOGE(TAG, "GT911 init failed");
+        ESP_LOGE(TAG, "GT911 init failed at 0x%02X", dev_addr);
+        esp_lcd_panel_io_del(io);
         return false;
     }
+    ESP_LOGI(TAG, "GT911 up at 0x%02X", dev_addr);
     return true;
+}
+
+bool init_touch() {
+    // The GT911 latches its I2C address from the INT level at reset release;
+    // log which address actually answers, then try both.
+    const uint16_t probe_addrs[] = {ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS,
+                                    ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP};
+    for (uint16_t addr : probe_addrs) {
+        const bool acks = i2c_master_probe(s_i2c_bus, addr, 100) == ESP_OK;
+        ESP_LOGI(TAG, "GT911 probe 0x%02X: %s", addr, acks ? "ACK" : "no ack");
+    }
+    return init_touch_at(ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS) ||
+           init_touch_at(ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP);
 }
 
 }  // namespace

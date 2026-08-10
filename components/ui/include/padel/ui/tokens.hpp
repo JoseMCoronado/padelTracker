@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "lvgl.h"
+#include "lv_font_montserrat_score.h"
 
 // Centralized design tokens (spec section 14.2). Every screen pulls sizes,
 // colors, and fonts from here; no screen hardcodes styling.
@@ -42,9 +43,9 @@ inline const lv_font_t* font_small() { return &lv_font_montserrat_14; }
 inline const lv_font_t* font_body() { return &lv_font_montserrat_16; }
 inline const lv_font_t* font_heading() { return &lv_font_montserrat_20; }
 inline const lv_font_t* font_large() { return &lv_font_montserrat_28; }
-inline const lv_font_t* font_score() { return &lv_font_montserrat_48; }
-// The point score must be readable across a court: 48 pt scaled 3x via
-// transform zoom (~144 px). A dedicated big font is a later polish item.
-inline constexpr std::uint16_t kScoreZoom = 256 * 3;
+// Match-complete banner text (full alphabet).
+inline const lv_font_t* font_banner() { return &lv_font_montserrat_48; }
+// Live point score: native large digits/AD — no transform zoom.
+inline const lv_font_t* font_score() { return &lv_font_montserrat_score; }
 
 }  // namespace padel::ui::tokens

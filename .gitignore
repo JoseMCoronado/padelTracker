@@ -3,6 +3,11 @@ build/
 .cache/
 compile_commands.json
 
+# firmware/remote built for a DevKit stand-in remote; the tracked sdkconfig
+# stays on esp32c3 for the real XIAO hardware.
+build-s3/
+firmware/remote/sdkconfig.s3*
+
 # Development radio keys (docs/PAIRING.md); never commit real keys.
 firmware/keys/dev_keys.h
 

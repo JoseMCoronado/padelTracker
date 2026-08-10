@@ -7,11 +7,14 @@
 //   - LED feedback patterns (centralized table lives in remote_core)
 //   - NVS persistence for RemoteSettings + court MAC (spec 11.5)
 //
-// Power behavior follows the spec 11.4 ordering: always-awake first; the
-// sleep hook below is a stub until packet/ACK reliability is proven on
-// hardware (M6).
+// Power behavior follows the spec 11.4 ordering. Steps 1 and 3 are in place:
+// the remote runs always-awake while in use, then deep sleeps after
+// CONFIG_PADEL_REMOTE_SLEEP_TIMEOUT_S of inactivity and wakes on the point
+// button. remote_core decides when sleeping is safe; this file only executes
+// it. Light/modem sleep between points (step 2) is still open.
 
 #include <cinttypes>
+#include <cstdio>
 #include <cstring>
 
 #include "driver/gpio.h"
@@ -21,6 +24,7 @@
 #include "esp_event.h"
 #include "esp_now.h"
 #include "esp_random.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -39,6 +43,12 @@ const char* TAG = "remote";
 constexpr uint8_t kBroadcastMac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 constexpr gpio_num_t kButtonGpio = static_cast<gpio_num_t>(CONFIG_PADEL_REMOTE_BUTTON_GPIO);
 constexpr gpio_num_t kLedGpio = static_cast<gpio_num_t>(CONFIG_PADEL_REMOTE_LED_GPIO);
+
+// pdMS_TO_TICKS rounds down, and at the default 100 Hz tick a 5 ms delay
+// rounds to zero ticks - vTaskDelay would then yield without ever blocking,
+// starving the idle task until the watchdog fires. Never go below one tick.
+constexpr TickType_t kPollIntervalTicks =
+    pdMS_TO_TICKS(5) > 0 ? static_cast<TickType_t>(pdMS_TO_TICKS(5)) : 1;
 
 struct RxFrame {
     uint8_t mac[ESP_NOW_ETH_ALEN];
@@ -194,6 +204,16 @@ public:
             case P::PairingSuccess:
                 blink(3, 100, 80);
                 break;
+            case P::UndoSent:
+                // One long pulse: the hold was recognised and the undo is on
+                // its way. Kept short so it does not delay the first retry.
+                blink(1, 300, 0);
+                break;
+            case P::Woke:
+                // Two slow pulses, deliberately unlike PressRegistered: the
+                // remote is awake but that press scored nothing (ADR-0015).
+                blink(2, 150, 150);
+                break;
         }
     }
 
@@ -238,13 +258,40 @@ void init_button() {
     ESP_ERROR_CHECK(gpio_config(&config));
 }
 
-// Sleep hook, deliberately inert until M6 (spec 11.4: never optimize sleep
-// before packet/ACK reliability is proven on hardware).
-void power_inactivity_hook(std::uint64_t /*idle_ms*/) {}
+#if CONFIG_PADEL_REMOTE_SLEEP_ENABLE
+// Deep sleep with button wake (spec 11.4 step 3). Only GPIO0-5 can wake the
+// C3 from deep sleep; GPIO3 (pad D1) is inside that range, recorded in
+// docs/HARDWARE_PINOUT.md. The internal pull-up is applied by
+// esp_deep_sleep_start itself, so the active-low button needs no external
+// resistor.
+static_assert(CONFIG_PADEL_REMOTE_BUTTON_GPIO >= 0 && CONFIG_PADEL_REMOTE_BUTTON_GPIO <= 5,
+              "Deep sleep wake on the ESP32-C3 only works on GPIO0-5; pick a wake-capable "
+              "button pin or disable CONFIG_PADEL_REMOTE_SLEEP_ENABLE");
+
+[[noreturn]] void enter_deep_sleep() {
+    ESP_LOGI(TAG, "sleep: deep sleep now, wake on GPIO%d low",
+             static_cast<int>(kButtonGpio));
+    // The console runs over the chip's own USB Serial/JTAG, which dies with
+    // the chip. Without draining first, the remote just vanishes from the
+    // monitor with no reason logged, which reads exactly like a crash.
+    fflush(stdout);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    gpio_set_level(kLedGpio, 0);
+    esp_wifi_stop();
+    ESP_ERROR_CHECK(
+        esp_deep_sleep_enable_gpio_wakeup(1ULL << kButtonGpio, ESP_GPIO_WAKEUP_GPIO_LOW));
+    esp_deep_sleep_start();
+}
+#endif
 
 }  // namespace
 
 extern "C" void app_main(void) {
+    // A deep-sleep wake re-enters app_main from the top, so the cause has to
+    // be read before anything else clears it.
+    const bool woke_from_button =
+        esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO;
+
     esp_err_t nvs = nvs_flash_init();
     if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -270,9 +317,13 @@ extern "C" void app_main(void) {
                                (static_cast<uint32_t>(mac[3]) << 16) |
                                (static_cast<uint32_t>(mac[4]) << 8) | mac[5];
 
-    static padel::remote::RemoteCore core(padel::remote::RemoteCoreConfig{}, clock, radio,
-                                          feedback, store);
-    core.begin(esp_random(), device_id);
+    padel::remote::RemoteCoreConfig core_config{};
+#if CONFIG_PADEL_REMOTE_SLEEP_ENABLE
+    core_config.inactivity_sleep_ms =
+        static_cast<std::uint32_t>(CONFIG_PADEL_REMOTE_SLEEP_TIMEOUT_S) * 1000u;
+#endif
+    static padel::remote::RemoteCore core(core_config, clock, radio, feedback, store);
+    core.begin(esp_random(), device_id, woke_from_button);
 
     // Re-add the persisted court peer, if any.
     if (store.cached().court_mac_valid) {
@@ -286,11 +337,62 @@ extern "C" void app_main(void) {
              static_cast<unsigned>(core.settings().court_id),
              CONFIG_PADEL_REMOTE_WIFI_CHANNEL);
 
-    std::uint64_t last_activity_ms = clock.now_ms();
+    // TEMPORARY bring-up instrumentation: the XIAO has no user LED, so
+    // without this the button is unobservable on hardware. Remove once the
+    // switch wiring is confirmed.
+    ESP_LOGI(TAG, "point button GPIO%d resting level=%d (expect 1 = released)",
+             static_cast<int>(kButtonGpio), gpio_get_level(kButtonGpio));
+    bool logged_level = false;
+    auto logged_state = core.state();
+    std::uint64_t next_heartbeat_ms = clock.now_ms();
+
+    // Wake-only (ADR-0015): the press that ended deep sleep powers the remote
+    // up and nothing more, so a knock in a kit bag cannot score. Levels stay
+    // masked until the button is seen released, which swallows exactly that
+    // press and no other.
+    bool swallow_wake_press = woke_from_button;
+    if (woke_from_button) {
+        ESP_LOGI(TAG, "woke on GPIO%d; that press will not score",
+                 static_cast<int>(kButtonGpio));
+        feedback.play(padel::remote::FeedbackPattern::Woke);
+    }
+
     RxFrame frame;
     while (true) {
         // Raw button level; remote_core debounces (active low).
-        core.set_button_level(gpio_get_level(kButtonGpio) == 0);
+        bool pressed = gpio_get_level(kButtonGpio) == 0;
+        if (swallow_wake_press) {
+            if (!pressed) {
+                swallow_wake_press = false;
+            }
+            pressed = false;
+        }
+        core.set_button_level(pressed);
+
+        if (pressed != logged_level) {
+            logged_level = pressed;
+            ESP_LOGI(TAG, "button raw %s at t=%llu", pressed ? "DOWN" : "UP",
+                     static_cast<unsigned long long>(clock.now_ms()));
+        }
+        if (core.state() != logged_state) {
+            logged_state = core.state();
+            ESP_LOGI(TAG, "state -> %d (0=PairingRequired 1=Advertise 2=Ready 3=Pending)",
+                     static_cast<int>(logged_state));
+        }
+        if (clock.now_ms() >= next_heartbeat_ms) {
+            next_heartbeat_ms = clock.now_ms() + 5000;
+            // gpio= is the real pin (0 = pressed, active low); raw= is what the
+            // core was told. They differ only while the wake mask is latched,
+            // so printing both separates a dead button from a masked one.
+            ESP_LOGI(TAG,
+                     "hb gpio=%d swallow=%d raw=%d state=%d presses=%u suppressed=%u "
+                     "intents=%u",
+                     gpio_get_level(kButtonGpio), swallow_wake_press ? 1 : 0,
+                     pressed ? 1 : 0, static_cast<int>(core.state()),
+                     static_cast<unsigned>(core.stats().presses),
+                     static_cast<unsigned>(core.stats().presses_suppressed),
+                     static_cast<unsigned>(core.stats().intents_sent));
+        }
 
         // Drain the radio queue (callback-enqueue pattern, spec 23.3).
         while (xQueueReceive(s_rx_queue, &frame, 0) == pdTRUE) {
@@ -305,7 +407,6 @@ extern "C" void app_main(void) {
                 if (ack) {
                     radio.learn_court(frame.mac);
                     core.on_ack(ack.value());
-                    last_activity_ms = clock.now_ms();
                 }
             } else if (type.value() == padel::protocol::MessageType::PairAssign) {
                 const auto assign = padel::protocol::parse_pair_assign(
@@ -313,17 +414,20 @@ extern "C" void app_main(void) {
                 if (assign) {
                     radio.learn_court(frame.mac);
                     core.on_pair_assign(assign.value());
-                    last_activity_ms = clock.now_ms();
                 }
             }
         }
 
         core.poll();
-        if (core.state() != padel::remote::RemoteState::Ready) {
-            last_activity_ms = clock.now_ms();
-        }
-        power_inactivity_hook(clock.now_ms() - last_activity_ms);
 
-        vTaskDelay(pdMS_TO_TICKS(5));
+#if CONFIG_PADEL_REMOTE_SLEEP_ENABLE
+        // Arming a low-level wake while the button is still down would wake
+        // the chip the instant it slept, so require a released button.
+        if (core.sleep_due() && !pressed && gpio_get_level(kButtonGpio) != 0) {
+            enter_deep_sleep();
+        }
+#endif
+
+        vTaskDelay(kPollIntervalTicks);
     }
 }

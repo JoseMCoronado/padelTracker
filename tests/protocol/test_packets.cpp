@@ -42,6 +42,13 @@ constexpr std::array<std::uint8_t, 31> kGoldenIntent = {
     0xBE, 0xAD, 0xDE, 0x58, 0x00, 0x00, 0x00, 0x02, 0x01, 0x78, 0x00,
     0x74, 0x0E, 0x40, 0xE2, 0x01, 0x00, 0x00, 0x2A, 0x0D};
 
+// Identical to kGoldenIntent apart from the action byte, which pins where
+// Action::UndoLastPoint sits in the frame (ADR-0014).
+constexpr std::array<std::uint8_t, 31> kGoldenUndoIntent = {
+    0x50, 0x53, 0x01, 0x01, 0x01, 0x00, 0xE9, 0x03, 0x00, 0x00, 0xEF,
+    0xBE, 0xAD, 0xDE, 0x58, 0x00, 0x00, 0x00, 0x02, 0x02, 0x78, 0x00,
+    0x74, 0x0E, 0x40, 0xE2, 0x01, 0x00, 0x00, 0xE5, 0xBC};
+
 constexpr std::array<std::uint8_t, 31> kGoldenAck = {
     0x50, 0x53, 0x01, 0x02, 0x01, 0x00, 0xE9, 0x03, 0x00, 0x00, 0xEF,
     0xBE, 0xAD, 0xDE, 0x58, 0x00, 0x00, 0x00, 0x01, 0x11, 0x00, 0x00,
@@ -51,6 +58,22 @@ constexpr std::array<std::uint8_t, 31> kGoldenAck = {
 
 TEST_CASE("point intent: serialize matches golden vector", "[packets][golden]") {
     REQUIRE(serialize(sample_intent()) == kGoldenIntent);
+}
+
+TEST_CASE("undo intent: serialize matches golden vector", "[packets][golden]") {
+    PointIntentPacket packet = sample_intent();
+    packet.action = Action::UndoLastPoint;
+    REQUIRE(serialize(packet) == kGoldenUndoIntent);
+}
+
+TEST_CASE("undo intent: round trip", "[packets]") {
+    PointIntentPacket packet = sample_intent();
+    packet.action = Action::UndoLastPoint;
+    const auto bytes = serialize(packet);
+    const auto result = parse_point_intent(bytes.data(), bytes.size());
+    REQUIRE(result.has_value());
+    REQUIRE(result.value().action == Action::UndoLastPoint);
+    REQUIRE(result.value().team == TeamId::B);
 }
 
 TEST_CASE("ack: serialize matches golden vector", "[packets][golden]") {

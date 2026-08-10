@@ -22,9 +22,28 @@ void CourtUi::create(UiCallbacks callbacks) {
     s.pairing.create(&s.shared);
     s.diagnostics.create(&s.shared);
     s.recovery.create(&s.shared);
+    s.club_mix.create(&s.shared);
+    s.club_standings.create(&s.shared);
     s.created = true;
     lv_scr_load(s.setup.root);
     s.current = Screen::Setup;
+}
+
+void CourtUi::debug_select_preset(int preset_index) {
+    if (screens_->created) {
+        lv_dropdown_set_selected(screens_->setup.preset_dropdown,
+                                 static_cast<uint16_t>(preset_index));
+    }
+}
+
+void CourtUi::debug_open_club_picker(TeamId team) {
+    if (screens_->created) {
+        screens_->setup.open_picker(team);
+    }
+}
+
+MatchSettings CourtUi::debug_read_settings() const {
+    return screens_->created ? screens_->setup.read_settings() : MatchSettings{};
 }
 
 void CourtUi::render(const UiModel& model) {
@@ -44,6 +63,8 @@ void CourtUi::render(const UiModel& model) {
             case Screen::Pairing: root = s.pairing.root; break;
             case Screen::Diagnostics: root = s.diagnostics.root; break;
             case Screen::Recovery: root = s.recovery.root; break;
+            case Screen::ClubMix: root = s.club_mix.root; break;
+            case Screen::ClubStandings: root = s.club_standings.root; break;
         }
         lv_scr_load(root);
         s.current = model.screen;
@@ -51,7 +72,7 @@ void CourtUi::render(const UiModel& model) {
 
     switch (s.current) {
         case Screen::Setup:
-            s.setup.update(model.settings, model.live);
+            s.setup.update(model.settings, model.live, model.club);
             break;
         case Screen::Live:
             s.live.update(model.live);
@@ -67,6 +88,12 @@ void CourtUi::render(const UiModel& model) {
             break;
         case Screen::Recovery:
             s.recovery.update(model.recovery);
+            break;
+        case Screen::ClubMix:
+            s.club_mix.update(model.club);
+            break;
+        case Screen::ClubStandings:
+            s.club_standings.update(model.club);
             break;
     }
 }

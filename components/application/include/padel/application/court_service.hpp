@@ -115,7 +115,12 @@ public:
 
     // --- Organizer / lifecycle commands (all journaled durably) -----------
     Result<EventId, ServiceError> start_match(TeamId initial_serving_team);
-    Result<EventId, ServiceError> undo_last_scoring_action();
+    // only_team restricts the undo to a point awarded to that team, which is
+    // how a remote hold takes back its own point (ADR-0014); the organizer
+    // passes nullopt and can undo whichever point came last.
+    Result<EventId, ServiceError> undo_last_scoring_action(
+        std::optional<TeamId> only_team = std::nullopt,
+        InputSource source = InputSource::TouchscreenAdmin);
     Result<EventId, ServiceError> set_serving_team(TeamId team);
     Result<EventId, ServiceError> pause_match();
     Result<EventId, ServiceError> resume_match();
@@ -139,6 +144,7 @@ public:
         std::uint32_t rejected = 0;
         std::uint32_t conflicts = 0;
         std::uint32_t storage_failures = 0;
+        std::uint32_t remote_undos = 0;
     };
     const Counters& counters() const { return counters_; }
 
@@ -161,6 +167,10 @@ private:
 
     static constexpr std::size_t kMaxRemotes = 8;
     static constexpr std::size_t kRecentConflictIdentities = 8;
+
+    // Remote hold-to-undo (ADR-0014): arrives on the POINT_INTENT frame with
+    // Action::UndoLastPoint, after the paired/team/dedup checks.
+    void handle_undo_intent(const protocol::IntentIdentity& intent, TeamId team);
 
     // Shared commit path. Returns the ACK status the press earns and fills
     // event_id when a point was applied.

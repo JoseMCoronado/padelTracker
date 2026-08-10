@@ -31,30 +31,127 @@ VSYNC pulse/back/front 45/13/3. Frame buffer in PSRAM, bounce buffer
 |---|---|
 | I2C SDA / SCL | GPIO8 / GPIO9 (shared bus with the IO expander) |
 | TP_IRQ | GPIO4 |
-| TP_RST | CH422G EXIO1 |
-| I2C addresses in use | 0x5D (GT911), 0x24 group (CH422G) |
+| TP_RST | IO extension EXIO1 |
+| I2C addresses in use | 0x5D or 0x14 (GT911), 0x24 (IO extension) |
 
-### CH422G IO expander (fixed)
+### IO extension — CH32V003 (fixed)
+
+Despite older Waveshare boards using a CH422G, the 7B's "IO EXTENSION" is a
+CH32V003 microcontroller at I2C address 0x24 with a normal register protocol:
+0x02 direction (1 = output), 0x03 output levels, 0x04 input readback,
+0x05 backlight PWM (leave untouched: any write engages a slow PWM mode that
+flickers visibly; unwritten, the backlight runs steady at full brightness,
+which is also what Waveshare's LCD demo does), 0x06 ADC.
 
 | Line | Function |
 |---|---|
 | EXIO1 | Touch reset |
 | EXIO2 | DISP (backlight enable) |
-| EXIO6 | LCD_VDD_EN (panel VCOM power) |
-| EXIO4 | TF card CS (unused) |
+| EXIO3 | LCD_RST (not in the wiki table; panel is backlight-only white while low) |
+| EXIO4 | TF card CS (active low, unused — keep high) |
 | EXIO5 | USB/CAN select (keep low = USB) |
+| EXIO6 | LCD_VDD_EN (panel VCOM power) |
+
+Quirks learned on hardware: the backlight PWM duty register is volatile, so a
+cold boot stays dark until it is written — even with DISP high. The MCU
+firmware also wants a short pause (~2 ms) between I2C transactions.
 
 ### Project peripherals (chosen by us, `menuconfig` -> "Padel Court")
 
 | Peripheral | Default GPIO | Rationale |
 |---|---|---|
 | Buzzer (active, high = on) | 6 | free sensor-port pin |
-| Arcade button Team A (active low, pull-up) | 16 | RS485 RX pin, RS485 unused |
+| Arcade button Team A (active low, pull-up) | 13 | TF card MISO; no card is used |
 | Arcade button Team B (active low, pull-up) | 15 | RS485 TX pin, RS485 unused |
 
-Free pins if more are needed: GPIO11/12/13 (TF card, if no card is used),
-GPIO19/20 (USB D-/D+, only if native USB is not needed; also CAN).
-Almost everything else is consumed by the panel.
+> **Do not put a button on GPIO16.** It is `RS485_RXD`, wired to the *output*
+> of the board's SP3485 transceiver (Waveshare wiki, "RS485 port"). The pin is
+> actively driven, so a switch pulling it to ground fights a push-pull output:
+> the press may never read low, and current flows for as long as it is held.
+> GPIO15 is the opposite case — `RS485_TXD` feeds the transceiver's
+> high-impedance input, so repurposing it costs nothing while RS485 is unused.
+
+Free pins if more are needed: GPIO11/12 (the rest of the TF card group, since
+the journal lives on internal-flash LittleFS), GPIO19/20 (USB D-/D+, only if
+native USB is not needed; also CAN). Almost everything else is consumed by the
+panel.
+
+## Arcade buttons (5x 30 mm illuminated)
+
+Switch and lamp are separate circuits inside the button.
+
+- **Switch**: microswitch `COM` to GND, `NO` to the input GPIO. Active low on
+  the internal pull-up; no external resistor anywhere in this project.
+- **Lamp (5V)**: 5V to lamp `+`; lamp `-` to a low-side switch — logic-level
+  MOSFET (2N7000/AO3400) gate straight off a GPIO, or BJT (BC337/2N2222) base
+  through 1 kΩ — source/emitter to GND. GPIO high = lit. A 3.3V GPIO cannot
+  drive a 5V lamp directly. Roughly 20 mA per lamp, resistor built in.
+
+The court unit firmware drives no lamps today: it has two switch inputs
+(GPIO16/15) and the buzzer, nothing else. On a remote the lamp doubles as the
+feedback LED via `PADEL_REMOTE_LED_GPIO`.
+
+### Bench harness on an ESP32-S3-DevKitC-1
+
+`firmware/button-test` exercises all five buttons on a spare DevKit and
+measures contact bounce. Its defaults avoid the DevKitC-1 N16R8 flash/octal
+PSRAM pins (26-37), USB (19/20), UART0 (43/44), the strapping pins (0/3/45/46)
+and the onboard RGB LED (48):
+
+| Button | Switch GPIO | Lamp GPIO |
+|---|---|---|
+| 1 | 4 | 16 |
+| 2 | 5 | 17 |
+| 3 | 6 | 18 |
+| 4 | 7 | 8 |
+| 5 | 15 | 9 |
+
+Button 1's pins are also what `firmware/remote` uses when built for esp32s3
+(`sdkconfig.defaults.esp32s3`), so one harness serves both the bench test and
+the DevKit stand-in clicker.
+
+### Measured bounce (2026-08-05, first run — provisional)
+
+| Button | GPIO | Presses | Avg bounce | Max bounce | Max edges | Glitch bursts |
+|---|---|---|---|---|---|---|
+| 1 | 4 | 96 | 21 ms | 389 ms | 5945 | 142 |
+| 2 | 5 | 25 | 1.6 ms | 25 ms | 77 | 4 |
+| 3 | 6 | 22 | 2.8 ms | 40 ms | 65 | 6 |
+| 4 | 7 | 21 | 4.0 ms | 74 ms | 90 | 10 |
+| 5 | 15 | 25 | 4.8 ms | 29 ms | 56 | 9 |
+
+Presses equalled releases on every button, so nothing was lost or doubled at
+the 25 ms settle window. The averages include glitch bursts, which inflates
+them.
+
+Why provisional: the harness was alligator clips and breadboard jumpers rather
+than crimped terminals, and button 1 was handled throughout the wiring
+session. Its 5945-edge, 389 ms burst is connection chatter, not switch bounce
+— disregard that row. Buttons 2-5 are the usable sample.
+
+What it means:
+
+- Typical bounce is 1.6-4.8 ms, which the assumed 30 ms covers easily.
+- Worst-case bursts reach 25-74 ms, which it does not. A burst longer than the
+  debounce window can present as press-release-press, i.e. one physical press
+  scoring twice. The bench tool records burst duration and edge count, not the
+  level pattern inside the burst, so this is a risk rather than a proof.
+- The remote is already protected: `RemoteCoreConfig::retrigger_guard_ms = 700`
+  suppresses a second accepted press inside 700 ms. The court unit's
+  `WiredButton` has no equivalent guard, and that gap is confirmed in code, not
+  just suspected: given two presses of the same team inside the conflict
+  window, `CourtService::award_point_local` commits the parked first press and
+  parks the second, so both score. A bounce burst split into two presses is a
+  silent double point.
+
+Debounce constants are deliberately unchanged until a re-run on a solid
+harness says what the real worst case is.
+
+Before these switches are trusted: re-run with crimped or soldered
+connections, and consider 100 nF across each switch (`COM`-`NO`) plus a 10 kΩ
+external pull-up for any cable run longer than a few tens of centimetres — the
+internal pull-up is only ~45 kΩ, which is weak for a metre of unshielded wire
+in a sports hall.
 
 ## Remote — Seeed XIAO ESP32-C3
 
@@ -67,7 +164,65 @@ Chosen by us, `menuconfig` -> "Padel Remote":
 
 The XIAO ESP32-C3 has **no user LED** on board — wire an LED + resistor to
 D10 (or change the Kconfig). The button wires between D1 and GND. Haptic
-motor driver pin will be chosen at M6 when sleep/haptics are enabled.
+motor driver pin will be chosen at M6 when haptics are enabled.
+
+### D1 wiring is the weak point (2026-08-05, twice in one session)
+
+The remote's button connection failed twice on bring-up day: first as an open
+circuit before the headers were soldered, then as an **intermittent** that
+appeared mid-session after a few hundred presses, where wiggling the wiring
+restored contact. Both times the symptom looked like a firmware fault.
+
+Diagnose it from the heartbeat rather than guessing. `gpio=` is the true pin
+level and `raw=` is what `remote_core` was told:
+
+| `gpio=` at rest | `gpio=` when pressed | Meaning |
+|---|---|---|
+| 1 | 0 | Healthy |
+| 1 | 1 (never drops) | Open circuit: joint, lead or switch |
+| 0 | 0 (always) | Short to GND, or a stuck switch |
+
+If wiggling the wire makes it fire, it is a cold joint or a loose spade
+terminal, not the board — a pin that reaches 0 at all proves the pad, the
+joint and the firmware path are fine. Reflow D1 and GND, and add strain
+relief so wire flex does not load the joint. The enclosure design should
+anchor the cable rather than let it hang off the solder pads.
+
+### Deep-sleep wake pin (verified, spec 11.4)
+
+**GPIO3 / pad D1 is wake-capable.** Only GPIO0-5 can wake an ESP32-C3 from
+deep sleep, confirmed against the IDF SoC capability header rather than
+assumed:
+
+```
+SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK  (BIT0 | BIT1 | BIT2 | BIT3 | BIT4 | BIT5)
+SOC_GPIO_DEEP_SLEEP_WAKE_SUPPORTED_PIN_CNT (6)
+```
+
+The point button therefore doubles as the wake source, low-level triggered
+(ADR-0015). No external pull-up is needed: `ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS`
+is on by default and `esp_deep_sleep_start` applies the pull-up itself. If a
+long cable run ever causes spurious wakes, add a 10 kΩ external pull-up
+**and** disable that option, since combining internal and external resistors
+is what the IDF warns against.
+
+Moving the button off GPIO0-5 produces a remote that sleeps and never wakes.
+A `static_assert` in `firmware/remote/main/main.cpp` fails the build rather
+than letting that ship.
+
+**Confirmed on hardware 2026-08-05**, unit 1 with a 60 s bench timeout: the
+remote slept on schedule and the arcade switch on D1 woke it, with the chip
+clock restarting from zero.
+
+One consequence to expect when monitoring. The XIAO has no USB-UART bridge —
+the console is the C3's own USB Serial/JTAG — so **the serial port disappears
+from the host while the remote sleeps** and re-enumerates on wake, possibly
+under a different name. A vanished port is normal sleep behaviour, not a
+crash. Two things follow: `esptool` cannot reach a sleeping remote, so wake
+it with a press before flashing; and early-boot log lines are lost every
+time, because the host has not finished enumerating the device yet. The
+sleep message survives only because `enter_deep_sleep()` drains the console
+before powering down.
 
 ## Radio
 

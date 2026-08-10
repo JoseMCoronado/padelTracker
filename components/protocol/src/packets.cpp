@@ -163,7 +163,8 @@ Result<PointIntentPacket, ProtocolError> parse_point_intent(const std::uint8_t* 
     packet.team = static_cast<TeamId>(team);
 
     const std::uint8_t action = reader.u8();
-    if (action != static_cast<std::uint8_t>(Action::AwardPoint)) {
+    if (action != static_cast<std::uint8_t>(Action::AwardPoint) &&
+        action != static_cast<std::uint8_t>(Action::UndoLastPoint)) {
         return R::err(ProtocolError::InvalidAction);
     }
     packet.action = static_cast<Action>(action);
@@ -191,7 +192,7 @@ Result<AckPacket, ProtocolError> parse_ack(const std::uint8_t* data, std::size_t
 
     const std::uint8_t status = reader.u8();
     if (status < static_cast<std::uint8_t>(AckStatus::Accepted) ||
-        status > static_cast<std::uint8_t>(AckStatus::ErrorStorage)) {
+        status > static_cast<std::uint8_t>(AckStatus::RejectedNothingToUndo)) {
         return R::err(ProtocolError::InvalidAckStatus);
     }
     packet.status = static_cast<AckStatus>(status);

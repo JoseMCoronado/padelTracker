@@ -1,0 +1,83 @@
+menu "Arcade button test"
+
+config BUTTON_TEST_COUNT
+    int "Number of buttons under test"
+    range 1 5
+    default 5
+    help
+        Buttons 1..N are configured; the rest are ignored. Lets you bench a
+        single button without rewiring the Kconfig defaults.
+
+config BUTTON_TEST_GPIO_1
+    int "Button 1 GPIO"
+    default 4
+    help
+        Microswitch COM to GND, NO to this pin. Active low with the internal
+        pull-up; no external resistor. Defaults avoid the DevKitC-1 N16R8
+        flash/PSRAM pins (26-37), USB (19/20), UART0 (43/44), the strapping
+        pins (0/3/45/46) and the onboard RGB LED (48).
+
+config BUTTON_TEST_GPIO_2
+    int "Button 2 GPIO"
+    default 5
+
+config BUTTON_TEST_GPIO_3
+    int "Button 3 GPIO"
+    default 6
+
+config BUTTON_TEST_GPIO_4
+    int "Button 4 GPIO"
+    default 7
+
+config BUTTON_TEST_GPIO_5
+    int "Button 5 GPIO"
+    default 15
+
+config BUTTON_TEST_LAMP_1
+    int "Lamp 1 GPIO (-1 = no lamp)"
+    default 16
+    help
+        Drives the low-side switch of the button's 5V lamp (MOSFET gate, or
+        a BJT base through 1k). Set to -1 when the lamps are wired straight
+        across 5V/GND and are not under software control.
+
+config BUTTON_TEST_LAMP_2
+    int "Lamp 2 GPIO (-1 = no lamp)"
+    default 17
+
+config BUTTON_TEST_LAMP_3
+    int "Lamp 3 GPIO (-1 = no lamp)"
+    default 18
+
+config BUTTON_TEST_LAMP_4
+    int "Lamp 4 GPIO (-1 = no lamp)"
+    default 8
+
+config BUTTON_TEST_LAMP_5
+    int "Lamp 5 GPIO (-1 = no lamp)"
+    default 9
+
+config BUTTON_TEST_LAMP_ACTIVE_HIGH
+    bool "Lamps are active high"
+    default y
+
+config BUTTON_TEST_SETTLE_MS
+    int "Edge burst settle window (ms)"
+    range 5 200
+    default 25
+    help
+        A run of edges is treated as one transition once the pin has been
+        quiet for this long. Must sit above the real bounce time and below
+        the shortest press a human can make (~50 ms).
+
+config BUTTON_TEST_BOUNCE_WARN_MS
+    int "Warn when a bounce burst reaches this many ms"
+    range 1 200
+    default 30
+    help
+        The debounce constant the product firmware assumes:
+        RemoteCoreConfig::stable_press_ms and WiredButton in
+        firmware/court-display. A warning here means that constant has to be
+        raised before the switches are trusted.
+
+endmenu

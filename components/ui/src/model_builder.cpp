@@ -27,6 +27,7 @@ const std::vector<std::string>& preset_names() {
         "Standard golden point",
         "Mini-set first to 3",
         "Match tiebreak final",
+        "Club round (2x first to 3, mix)",
     };
     return names;
 }
@@ -36,6 +37,7 @@ domain::MatchConfig preset_config(int preset_index) {
         case 1:
             return domain::preset_standard_golden_point();
         case 2:
+        case kClubRoundPreset:  // each club set is a mini-set
             return domain::preset_club_mini_set();
         case 3:
             return domain::preset_match_tiebreak_final();
@@ -161,6 +163,70 @@ CompleteViewModel build_complete_model(const application::CourtService& service,
         model.duration_label = buffer;
     }
     return model;
+}
+
+ClubViewModel build_club_model(const application::PlayerRoster& roster,
+                               const application::ClubController& controller,
+                               const std::string& setup_hint) {
+    ClubViewModel model{};
+    model.setup_hint = setup_hint;
+    for (const application::Player& player : roster.players()) {
+        model.roster.push_back(ClubPlayer{player.id, player.name, player.guest});
+    }
+
+    if (!controller.round_active()) {
+        return model;
+    }
+
+    if (controller.stage() == domain::ClubStage::Set2) {
+        const auto teams = controller.current_set_teams();
+        model.mix_detail = controller.last_set_summary();
+        model.mix_team_a = teams.team_a;
+        model.mix_team_b = teams.team_b;
+    } else if (controller.stage() == domain::ClubStage::Complete) {
+        int rank = 0;
+        for (const auto& row : controller.standings()) {
+            ClubStandingRowModel entry{};
+            entry.rank = std::to_string(++rank);
+            entry.name = row.player.name;
+            char record[32];
+            std::snprintf(record, sizeof(record), "%u %s  %+d", row.wins,
+                          row.wins == 1 ? "WIN" : "WINS", row.differential);
+            entry.record = record;
+            entry.top2 = row.top2;
+            model.standings.push_back(std::move(entry));
+        }
+        model.coin_announcement = controller.coin_flip_announcement();
+        // The flip decides the second Top 2 spot (rank 2).
+        if (!model.coin_announcement.empty() && model.standings.size() > 1) {
+            model.standings[1].coin = true;
+        }
+    }
+    return model;
+}
+
+bool suggest_next_round_picks(const application::ClubController& controller,
+                              std::vector<ClubPlayer>& out_a,
+                              std::vector<ClubPlayer>& out_b) {
+    out_a.clear();
+    out_b.clear();
+    if (!controller.round_active() ||
+        controller.stage() != domain::ClubStage::Complete) {
+        return false;
+    }
+    std::vector<ClubPlayer> top;
+    for (const auto& row : controller.standings()) {
+        if (row.top2) {
+            top.push_back(ClubPlayer{row.player.id, row.player.name, row.player.guest});
+        }
+    }
+    if (top.size() != 2) {
+        return false;
+    }
+    // Rank-1 Top 2 alone on Team A, rank-2 alone on Team B.
+    out_a.push_back(top[0]);
+    out_b.push_back(top[1]);
+    return true;
 }
 
 }  // namespace padel::ui

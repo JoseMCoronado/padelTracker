@@ -3,6 +3,11 @@
 Prepared before arrival; execute top to bottom when the display is in hand.
 Stop point for this phase: static scoreboard + touch verified.
 
+> Bring-up is done. If the display misbehaves (black screen, backlight-only
+> glow, flicker, touch absent), see the hard-won answers in
+> [troubleshooting/WAVESHARE_7B_DISPLAY.md](troubleshooting/WAVESHARE_7B_DISPLAY.md)
+> before re-debugging.
+
 ## 1. Confirm the exact model
 
 Read the PCB/SKU label on the back of the board. The purchase listing

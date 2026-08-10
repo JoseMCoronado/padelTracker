@@ -46,7 +46,10 @@ Kconfig GPIO defaults for buzzer/buttons.
 | Court id | 1 | |
 | Wi-Fi channel | 1 | must match the remotes |
 | Buzzer GPIO | 6 | sensor-port pin, active high |
-| Wired button A / B GPIO | 16 / 15 | RS485 pins repurposed, active low |
+| Wired button A / B GPIO | 13 / 15 | active low; TF card MISO and RS485 TX, both unused |
+
+Not GPIO16 for a button: it is RS485_RXD, driven by the onboard SP3485's
+output. See `docs/HARDWARE_PINOUT.md`.
 
 ## Storage
 

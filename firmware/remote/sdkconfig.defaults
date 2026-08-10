@@ -1,0 +1,6 @@
+# Intentionally empty for the real hardware (Seeed XIAO ESP32-C3): its
+# defaults live in main/Kconfig.projbuild and the tracked sdkconfig.
+#
+# This file has to exist for ESP-IDF to pick up sdkconfig.defaults.esp32s3,
+# which configures a DevKitC-1 standing in as a remote until the clickers
+# arrive.

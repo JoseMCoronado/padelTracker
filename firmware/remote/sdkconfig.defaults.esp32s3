@@ -1,0 +1,9 @@
+# Applied only when this project is built for esp32s3, i.e. an ESP32-S3
+# DevKitC-1 standing in for a XIAO remote. The GPIOs match button 1 of
+# firmware/button-test (switch GPIO4, lamp GPIO16), so the same arcade button
+# harness moves between the bench test and the clicker without rewiring.
+#
+# The real XIAO ESP32-C3 defaults (pads D1/D10) are untouched and live in
+# main/Kconfig.projbuild + the tracked sdkconfig.
+CONFIG_PADEL_REMOTE_BUTTON_GPIO=4
+CONFIG_PADEL_REMOTE_LED_GPIO=16

@@ -27,6 +27,10 @@ struct AwardPoint {
 
 struct UndoLastScoringAction {
     InputSource source{InputSource::TouchscreenAdmin};
+    // When set, the undo only proceeds if the most recent point belongs to
+    // this team, so a remote can take back its own team's point but never
+    // the opponents' (ADR-0014). The organizer's undo leaves this empty.
+    std::optional<TeamId> only_team{};
 };
 
 struct SetServingTeam {

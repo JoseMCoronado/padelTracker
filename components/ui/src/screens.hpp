@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "lvgl.h"
 #include "padel/ui/court_ui.hpp"
@@ -85,7 +86,8 @@ struct LiveScreen {
 
 struct SetupScreen {
     void create(Shared* shared);
-    void update(const MatchSettings& settings, const LiveViewModel& live);
+    void update(const MatchSettings& settings, const LiveViewModel& live,
+                const ClubViewModel& club);
     MatchSettings read_settings() const;
 
     Shared* shared = nullptr;
@@ -93,14 +95,51 @@ struct SetupScreen {
     lv_obj_t* court_field = nullptr;
     lv_obj_t* team_a_field = nullptr;
     lv_obj_t* team_b_field = nullptr;
-    lv_obj_t* players_a_field = nullptr;
-    lv_obj_t* players_b_field = nullptr;
     lv_obj_t* preset_dropdown = nullptr;
     lv_obj_t* server_dropdown = nullptr;
     lv_obj_t* remote_a_status = nullptr;
     lv_obj_t* remote_b_status = nullptr;
+    lv_obj_t* start_label = nullptr;  // START MATCH / START CLUB ROUND
     lv_obj_t* keyboard = nullptr;
     bool fields_initialized = false;
+
+    // --- Club round row + player picker modal (screen_club.cpp) -----------
+    void create_club_row(lv_obj_t* parent);
+    void update_club(const ClubViewModel& club);
+    bool club_mode() const;  // MODE dropdown set to "Club round"
+    void open_picker(TeamId team);
+    void close_picker();
+    void rebuild_picker_grid();       // recreates tiles (open / search / roster change)
+    void refresh_picker_tiles();      // restyles existing tiles after a pick toggle
+    void toggle_pick(const ClubPlayer& player);
+    void add_new_player_from_search();
+    void add_guest();
+    void on_start_pressed();  // routes to start_match or start_club_round
+
+    lv_obj_t* club_panel = nullptr;        // players row (all modes)
+    lv_obj_t* club_title_label = nullptr;  // retitled per mode
+    lv_obj_t* club_pick_a_button = nullptr;
+    lv_obj_t* club_pick_b_button = nullptr;
+    lv_obj_t* club_a_label = nullptr;      // "JOSE & ZOE" or "tap to pick"
+    lv_obj_t* club_b_label = nullptr;
+    lv_obj_t* club_hint_label = nullptr;   // forbidden pair / validation
+
+    lv_obj_t* picker_overlay = nullptr;    // created on demand, full-screen
+    lv_obj_t* picker_title = nullptr;
+    lv_obj_t* picker_search = nullptr;
+    lv_obj_t* picker_grid = nullptr;
+    lv_obj_t* picker_count_label = nullptr;
+    lv_obj_t* picker_keyboard = nullptr;
+
+    std::vector<ClubPlayer> roster_snapshot;  // last rendered roster
+    std::vector<ClubPlayer> picker_items;     // players behind the grid tiles
+    std::vector<ClubPlayer> picked_a;
+    std::vector<ClubPlayer> picked_b;
+    TeamId picking = TeamId::A;
+    int guest_counter = 0;
+    std::string pending_new_player;  // auto-select once it lands in the roster
+    std::string club_hint_local;     // picker-side validation message
+    std::uint32_t applied_suggestion_seq = 0;  // last NEW ROUND seed applied
 };
 
 struct CompleteScreen {
@@ -147,6 +186,34 @@ struct RecoveryScreen {
     lv_obj_t* detail_label = nullptr;
 };
 
+struct ClubMixScreen {
+    void create(Shared* shared);
+    void update(const ClubViewModel& model);
+
+    Shared* shared = nullptr;
+    lv_obj_t* root = nullptr;
+    lv_obj_t* detail_label = nullptr;   // set 1 result
+    lv_obj_t* team_a_label = nullptr;   // set 2 pairing
+    lv_obj_t* team_b_label = nullptr;
+};
+
+struct ClubStandingsScreen {
+    void create(Shared* shared);
+    void update(const ClubViewModel& model);
+
+    Shared* shared = nullptr;
+    lv_obj_t* root = nullptr;
+    lv_obj_t* coin_label = nullptr;
+    struct Row {
+        lv_obj_t* panel = nullptr;
+        lv_obj_t* rank = nullptr;
+        lv_obj_t* name = nullptr;
+        lv_obj_t* record = nullptr;
+        lv_obj_t* tag = nullptr;  // TOP 2 / BOTTOM 2
+    };
+    Row rows[4]{};
+};
+
 struct Screens {
     Shared shared{};
     LiveScreen live{};
@@ -155,6 +222,8 @@ struct Screens {
     PairingScreen pairing{};
     DiagnosticsScreen diagnostics{};
     RecoveryScreen recovery{};
+    ClubMixScreen club_mix{};
+    ClubStandingsScreen club_standings{};
     Screen current = Screen::Setup;
     bool created = false;
 };

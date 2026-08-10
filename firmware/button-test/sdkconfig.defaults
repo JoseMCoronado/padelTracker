@@ -1,0 +1,5 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+# 1 ms tick so the settle window is checked at a useful granularity; the
+# edge timestamps themselves come from esp_timer (microseconds).
+CONFIG_FREERTOS_HZ=1000

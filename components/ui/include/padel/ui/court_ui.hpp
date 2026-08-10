@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -26,6 +27,15 @@ struct UiCallbacks {
     std::function<void()> confirm_pairing;
     std::function<void(bool resume)> recovery_choice;      // resume vs discard
     std::function<void()> test_beep;                       // diagnostics buzzer test
+
+    // --- Club round ---------------------------------------------------------
+    // NEW PLAYER in the picker; host persists to the roster and republishes.
+    std::function<void(const std::string& name)> create_player;
+    // Start a club round: {teamA[0], teamA[1], teamB[0], teamB[1]}.
+    std::function<void(const std::array<ClubPlayer, 4>&, const MatchSettings&)> start_club_round;
+    std::function<void()> club_next_set;   // mix screen -> start set 2
+    std::function<void()> club_new_round;  // standings -> setup (same roster)
+    std::function<void()> club_done;       // standings -> setup, clear club state
 };
 
 namespace internal {
@@ -48,6 +58,12 @@ public:
 
     void create(UiCallbacks callbacks);
     void render(const UiModel& model);
+
+    // Test/tour hooks: drive setup-screen state that is otherwise only
+    // reachable through touch (the MODE dropdown and the picker modal).
+    void debug_select_preset(int preset_index);
+    void debug_open_club_picker(TeamId team);
+    MatchSettings debug_read_settings() const;
 
     // Setup-screen edits live inside LVGL widgets; the host reads them back
     // when start is pressed (delivered through start_match callback).

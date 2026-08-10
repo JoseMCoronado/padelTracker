@@ -9,46 +9,61 @@ namespace {
 
 LiveScreen* self(lv_event_t* e) { return static_cast<LiveScreen*>(lv_event_get_user_data(e)); }
 
-void build_team_panel(LiveScreen::TeamPanel& panel, lv_obj_t* parent, lv_color_t accent) {
+void on_award_a(lv_event_t* e);
+void on_award_b(lv_event_t* e);
+
+// Touchscreen fallback (spec 15): the whole team panel is a tap target that
+// awards a point, so scoring works even with the remotes off.
+void build_team_panel(LiveScreen::TeamPanel& panel, lv_obj_t* parent, lv_color_t accent,
+                      lv_event_cb_t award_handler, void* user_data) {
     panel.panel = make_panel(parent);
+    lv_obj_add_flag(panel.panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(panel.panel, award_handler, LV_EVENT_CLICKED, user_data);
     lv_obj_set_flex_grow(panel.panel, 1);
     lv_obj_set_height(panel.panel, LV_PCT(100));
     lv_obj_set_style_border_side(panel.panel, LV_BORDER_SIDE_LEFT, 0);
     lv_obj_set_style_border_width(panel.panel, 6, 0);
     lv_obj_set_style_border_color(panel.panel, accent, 0);
+    // Tight padding so the score can own the panel.
+    lv_obj_set_style_pad_all(panel.panel, tokens::kSpaceS, 0);
+    lv_obj_set_style_pad_row(panel.panel, tokens::kSpaceXs, 0);
     lv_obj_set_flex_flow(panel.panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(panel.panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
     // Long names ellipsize instead of overflowing the panel (spec 18.6).
-    panel.name = make_label(panel.panel, tokens::font_large(), accent);
+    // Keep chrome compact so the score can dominate the panel.
+    panel.name = make_label(panel.panel, tokens::font_heading(), accent);
     lv_obj_set_width(panel.name, LV_PCT(100));
     lv_label_set_long_mode(panel.name, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(panel.name, LV_TEXT_ALIGN_CENTER, 0);
-    panel.players = make_label(panel.panel, tokens::font_body(), tokens::text_muted());
+    panel.players = make_label(panel.panel, tokens::font_small(), tokens::text_muted());
     lv_obj_set_width(panel.players, LV_PCT(100));
     lv_label_set_long_mode(panel.players, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(panel.players, LV_TEXT_ALIGN_CENTER, 0);
 
-    // Fixed-height slot so the 3x-zoomed score has room to render.
+    // Score claims all leftover height; digits stay centered in the slot.
     lv_obj_t* score_slot = lv_obj_create(panel.panel);
-    lv_obj_set_size(score_slot, LV_PCT(100), 220);
+    lv_obj_set_size(score_slot, LV_PCT(100), 10);  // grows via flex
+    lv_obj_set_flex_grow(score_slot, 1);
     lv_obj_set_style_bg_opa(score_slot, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(score_slot, 0, 0);
+    lv_obj_set_style_pad_all(score_slot, 0, 0);
     lv_obj_clear_flag(score_slot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(score_slot, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    // Let touches fall through to the panel's tap-to-score handler.
+    lv_obj_clear_flag(score_slot, LV_OBJ_FLAG_CLICKABLE);
 
     panel.points = make_label(score_slot, tokens::font_score(), tokens::text());
+    // "AD" is the widest score string — slight tracking so it fits the panel.
+    lv_obj_set_style_text_letter_space(panel.points, -4, 0);
     lv_obj_center(panel.points);
-    lv_obj_set_style_transform_zoom(panel.points, tokens::kScoreZoom, 0);
-    lv_obj_add_flag(panel.points, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     panel.plus_one = make_label(score_slot, tokens::font_large(), tokens::success());
     lv_label_set_text(panel.plus_one, "+1");
-    lv_obj_align(panel.plus_one, LV_ALIGN_TOP_RIGHT, -tokens::kSpaceM, tokens::kSpaceM);
+    lv_obj_align(panel.plus_one, LV_ALIGN_TOP_RIGHT, -tokens::kSpaceS, tokens::kSpaceS);
     lv_obj_add_flag(panel.plus_one, LV_OBJ_FLAG_HIDDEN);
 
-    panel.games_sets = make_label(panel.panel, tokens::font_large(), tokens::text());
+    panel.games_sets = make_label(panel.panel, tokens::font_heading(), tokens::text());
 
     lv_obj_t* tag_row = lv_obj_create(panel.panel);
     lv_obj_set_size(tag_row, LV_PCT(100), LV_SIZE_CONTENT);
@@ -59,6 +74,7 @@ void build_team_panel(LiveScreen::TeamPanel& panel, lv_obj_t* parent, lv_color_t
     lv_obj_set_flex_align(tag_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(tag_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(tag_row, LV_OBJ_FLAG_CLICKABLE);
 
     panel.serving_tag = make_label(tag_row, tokens::font_body(), accent);
     lv_label_set_text(panel.serving_tag, LV_SYMBOL_PLAY " SERVING");
@@ -69,11 +85,13 @@ void update_team_panel(LiveScreen::TeamPanel& panel, const TeamPanelModel& m,
                        bool flash) {
     set_text(panel.name, m.name);
     set_text(panel.players, m.players);
+    // Hide the players line when empty so the score can use the vertical space.
+    if (m.players.empty()) {
+        lv_obj_add_flag(panel.players, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(panel.players, LV_OBJ_FLAG_HIDDEN);
+    }
     set_text(panel.points, m.points);
-    // Keep the zoom centered: pivot follows the label size for each text.
-    lv_obj_update_layout(panel.points);
-    lv_obj_set_style_transform_pivot_x(panel.points, lv_obj_get_width(panel.points) / 2, 0);
-    lv_obj_set_style_transform_pivot_y(panel.points, lv_obj_get_height(panel.points) / 2, 0);
 
     set_text(panel.games_sets, "Games " + m.games + "      Sets " + m.sets);
 
@@ -252,8 +270,8 @@ void LiveScreen::create(Shared* shared_state) {
     lv_obj_set_flex_flow(center, LV_FLEX_FLOW_ROW);
     lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
 
-    build_team_panel(team_a, center, tokens::team_a());
-    build_team_panel(team_b, center, tokens::team_b());
+    build_team_panel(team_a, center, tokens::team_a(), on_award_a, this);
+    build_team_panel(team_b, center, tokens::team_b(), on_award_b, this);
 
     // --- Footer ------------------------------------------------------------
     lv_obj_t* footer = lv_obj_create(root);
@@ -292,8 +310,7 @@ void LiveScreen::create(Shared* shared_state) {
         lv_obj_set_width(b, LV_PCT(100));
         return b;
     };
-    full_width_button("+1 TEAM A", on_award_a);
-    full_width_button("+1 TEAM B", on_award_b);
+    // +1 buttons removed: tapping a team's score panel awards the point.
     full_width_button(LV_SYMBOL_LEFT " UNDO", on_undo);
     lv_obj_t* pause_button = full_width_button("PAUSE", on_pause);
     pause_button_label = lv_obj_get_child(pause_button, 0);

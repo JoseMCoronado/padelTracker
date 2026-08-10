@@ -14,6 +14,7 @@ FeedbackPattern feedback_for(protocol::AckStatus status) {
         case protocol::AckStatus::RejectedUnpaired:
         case protocol::AckStatus::RejectedPaused:
         case protocol::AckStatus::RejectedInvalidPacket:
+        case protocol::AckStatus::RejectedNothingToUndo:
             return FeedbackPattern::RejectedOther;
         case protocol::AckStatus::ErrorStorage:
             return FeedbackPattern::CommFailed;
@@ -28,7 +29,8 @@ RemoteCore::RemoteCore(RemoteCoreConfig config,
                        ISettingsStore& store)
     : config_(config), clock_(clock), radio_(radio), feedback_(feedback), store_(store) {}
 
-void RemoteCore::begin(std::uint32_t boot_id, std::uint32_t device_id) {
+void RemoteCore::begin(std::uint32_t boot_id, std::uint32_t device_id,
+                       bool woke_from_sleep) {
     boot_id_ = boot_id;
     if (const auto loaded = store_.load()) {
         settings_ = *loaded;
@@ -41,6 +43,35 @@ void RemoteCore::begin(std::uint32_t boot_id, std::uint32_t device_id) {
     // the baseline guards against boot_id collisions.
     sequence_ = settings_.sequence_baseline;
     level_since_ms_ = clock_.now_ms();
+    note_activity();
+    woke_from_sleep_ = woke_from_sleep;
+}
+
+void RemoteCore::note_activity() {
+    last_activity_ms_ = clock_.now_ms();
+    woke_from_sleep_ = false;
+}
+
+bool RemoteCore::sleep_due() const {
+    // Anything outstanding keeps the remote awake: an unacknowledged intent,
+    // an active pairing advertisement, or a finger still on the button.
+    if (pending_ || advertising_ || press_armed_ || stable_level_ || raw_level_) {
+        return false;
+    }
+    const RemoteState current = state();
+    // An unpaired remote in a drawer is exactly the case worth sleeping, so
+    // PairingRequired sleeps too.
+    if (current != RemoteState::Ready && current != RemoteState::PairingRequired) {
+        return false;
+    }
+    // A wake nothing followed buys the shorter of the two windows, never a
+    // longer one: shortening inactivity_sleep_ms for bench work would
+    // otherwise make a spurious wake stay awake longer than an idle remote.
+    std::uint32_t timeout = config_.inactivity_sleep_ms;
+    if (woke_from_sleep_ && config_.post_wake_idle_ms < timeout) {
+        timeout = config_.post_wake_idle_ms;
+    }
+    return clock_.now_ms() - last_activity_ms_ >= timeout;
 }
 
 void RemoteCore::apply_pairing(std::uint32_t remote_id, CourtId court_id, TeamId team) {
@@ -73,12 +104,15 @@ void RemoteCore::enter_pairing_mode() {
     advertise_until_ms_ = now + config_.pairing_timeout_ms;
     next_advertise_ms_ = now;  // first broadcast immediately
     pending_.reset();
+    // The gesture that got us here must not also score when the finger lifts.
+    press_armed_ = false;
 }
 
 void RemoteCore::on_pair_assign(const protocol::PairAssignPacket& packet) {
     if (!advertising_ || packet.remote_id != settings_.remote_id) {
         return;
     }
+    note_activity();
     advertising_ = false;
     apply_pairing(settings_.remote_id, packet.court_id, packet.team);
 }
@@ -92,6 +126,11 @@ void RemoteCore::set_button_level(bool pressed) {
 
 void RemoteCore::on_debounced_press() {
     const std::uint64_t now = clock_.now_ms();
+    press_armed_ = false;
+    // Every real press counts as activity, including one the guard goes on to
+    // suppress: the finger was there either way.
+    note_activity();
+
     // Local retrigger guard: a second accepted press within the guard window
     // is suppressed (spec 11.2: double taps must not double-score).
     if (last_accepted_press_ms_ != 0 &&
@@ -111,8 +150,19 @@ void RemoteCore::on_debounced_press() {
         ++stats_.presses_suppressed;
         return;
     }
+    // The cue fires now so the button feels instant, but the packet waits for
+    // the release: until the finger lifts we cannot tell a point from a hold
+    // that is on its way to becoming an undo (ADR-0014).
     feedback_.play(FeedbackPattern::PressRegistered);
-    start_intent();
+    press_armed_ = true;
+}
+
+void RemoteCore::on_debounced_release(std::uint64_t now) {
+    if (!press_armed_) {
+        return;  // suppressed press, or the hold already spent itself on an undo
+    }
+    press_armed_ = false;
+    start_intent(protocol::Action::AwardPoint, now - press_started_ms_);
 }
 
 void RemoteCore::persist_baseline_if_needed() {
@@ -124,7 +174,7 @@ void RemoteCore::persist_baseline_if_needed() {
     }
 }
 
-void RemoteCore::start_intent() {
+void RemoteCore::start_intent(protocol::Action action, std::uint64_t held_ms) {
     persist_baseline_if_needed();
     ++sequence_;
 
@@ -133,10 +183,18 @@ void RemoteCore::start_intent() {
     pending.packet.identity =
         protocol::IntentIdentity{settings_.remote_id, boot_id_, sequence_};
     pending.packet.team = settings_.team;
+    pending.packet.action = action;
+    // Known before the first transmission, so retries of the same identity
+    // always carry identical bytes.
+    pending.packet.button_duration_ms =
+        static_cast<std::uint16_t>(held_ms > 0xFFFF ? 0xFFFF : held_ms);
     pending.packet.battery_mv = battery_mv_;
     pending.packet.monotonic_ms = static_cast<std::uint32_t>(clock_.now_ms());
     pending_ = pending;
     ++stats_.intents_sent;
+    if (action == protocol::Action::UndoLastPoint) {
+        ++stats_.undos_sent;
+    }
     transmit();
 }
 
@@ -152,6 +210,7 @@ void RemoteCore::on_ack(const protocol::AckPacket& ack) {
     if (!pending_ || !(ack.identity == pending_->packet.identity)) {
         return;  // stale or foreign ACK
     }
+    note_activity();
     const FeedbackPattern pattern = feedback_for(ack.status);
     if (pattern == FeedbackPattern::Accepted) {
         ++stats_.confirmed;
@@ -187,6 +246,15 @@ void RemoteCore::poll() {
         enter_pairing_mode();
     }
 
+    // Hold while paired takes the team's own last point back (ADR-0014).
+    // Once per hold: a second undo needs a fresh press.
+    if (settings_.paired && stable_level_ && press_armed_ &&
+        now - press_started_ms_ >= config_.undo_hold_ms) {
+        press_armed_ = false;
+        feedback_.play(FeedbackPattern::UndoSent);
+        start_intent(protocol::Action::UndoLastPoint, now - press_started_ms_);
+    }
+
     // --- Debounce ---------------------------------------------------------
     if (raw_level_ != stable_level_) {
         const std::uint32_t required =
@@ -196,9 +264,8 @@ void RemoteCore::poll() {
             if (stable_level_) {
                 press_started_ms_ = now;
                 on_debounced_press();
-            } else if (pending_ && pending_->packet.button_duration_ms == 0) {
-                pending_->packet.button_duration_ms = static_cast<std::uint16_t>(
-                    now - press_started_ms_ > 0xFFFF ? 0xFFFF : now - press_started_ms_);
+            } else {
+                on_debounced_release(now);
             }
         }
     }

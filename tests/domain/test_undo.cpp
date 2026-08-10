@@ -177,6 +177,43 @@ TEST_CASE("undo: next_undo_target previews the compensated point", "[undo]") {
     REQUIRE(target->team == TeamId::B);
 }
 
+TEST_CASE("undo: team-scoped undo takes back that team's own point", "[undo][team]") {
+    MatchEngine engine = started(preset_standard_advantage());
+    award(engine, TeamId::A, 2);
+
+    REQUIRE(engine.handle(UndoLastScoringAction{InputSource::Remote, TeamId::A}).has_value());
+    REQUIRE(display(engine).points_a == "15");
+}
+
+TEST_CASE("undo: team-scoped undo refuses the opponents' point", "[undo][team]") {
+    MatchEngine engine = started(preset_standard_advantage());
+    award(engine, TeamId::A, 2);
+    award(engine, TeamId::B);
+
+    // Team A holding its remote must not reverse B's point, and must not
+    // reach past it to A's earlier one either.
+    const auto result = engine.handle(UndoLastScoringAction{InputSource::Remote, TeamId::A});
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == CommandError::NothingToUndo);
+    REQUIRE(display(engine).points_a == "30");
+    REQUIRE(display(engine).points_b == "15");
+}
+
+TEST_CASE("undo: team-scoped undo stops after the team's point is gone", "[undo][team]") {
+    MatchEngine engine = started(preset_standard_advantage());
+    award(engine, TeamId::A, 2);
+    REQUIRE(engine.handle(UndoLastScoringAction{InputSource::Remote, TeamId::A}).has_value());
+
+    // The next-newest point is A's too, so a second hold is allowed to take
+    // that one back as well.
+    REQUIRE(engine.handle(UndoLastScoringAction{InputSource::Remote, TeamId::A}).has_value());
+    REQUIRE(display(engine).points_a == "0");
+
+    const auto third = engine.handle(UndoLastScoringAction{InputSource::Remote, TeamId::A});
+    REQUIRE_FALSE(third.has_value());
+    REQUIRE(third.error() == CommandError::NothingToUndo);
+}
+
 TEST_CASE("undo: state matches never-happened history (revision aside)", "[undo][replay]") {
     // Undo must produce the same scoreboard as if the point never happened.
     MatchEngine with_undo = started(preset_standard_advantage());

@@ -41,6 +41,8 @@ enum class FeedbackPattern : std::uint8_t {
     CommFailed,        // one long pulse / three red flashes
     PairingRequired,   // press with no credentials
     PairingSuccess,    // three short pulses / green sequence
+    UndoSent,          // hold reached the undo threshold (ADR-0014)
+    Woke,              // button ended deep sleep; that press does not score
 };
 
 class IFeedback {
@@ -77,6 +79,10 @@ struct RemoteCoreConfig {
     std::uint32_t stable_press_ms = 30;
     std::uint32_t stable_release_ms = 30;
     std::uint32_t retrigger_guard_ms = 700;
+    // Hold-to-undo (ADR-0014). Holding this long while paired takes the
+    // team's own last point back instead of scoring, so the award intent is
+    // sent on release rather than on press. Must stay below pairing_hold_ms.
+    std::uint32_t undo_hold_ms = 3000;
     // Retry policy (docs/RADIO_PROTOCOL.md).
     std::uint32_t ack_timeout_ms = 450;
     std::uint8_t max_attempts = 5;
@@ -89,6 +95,12 @@ struct RemoteCoreConfig {
     std::uint32_t pairing_hold_ms = 5000;
     std::uint32_t pairing_advertise_interval_ms = 500;
     std::uint32_t pairing_timeout_ms = 60'000;
+    // Inactivity sleep (spec 11.4 step 3). The core owns the idle clock so the
+    // decision is testable natively; the firmware only executes it.
+    std::uint32_t inactivity_sleep_ms = 900'000;  // 15 min
+    // A wake that no press follows was spurious (a knock in a kit bag), so it
+    // buys a short window rather than a full timeout of awake time.
+    std::uint32_t post_wake_idle_ms = 60'000;
 };
 
 enum class RemoteState : std::uint8_t {
@@ -109,8 +121,11 @@ public:
     // Loads persisted settings and advances the sequence past any possibly
     // used identity. boot_id must come from a hardware random source.
     // device_id is the hardware-derived logical remote id (e.g. from the
-    // MAC); it is used when no persisted identity exists yet.
-    void begin(std::uint32_t boot_id, std::uint32_t device_id = 0);
+    // MAC); it is used when no persisted identity exists yet. woke_from_sleep
+    // marks a boot caused by the wake button, which shortens the next sleep
+    // timeout to post_wake_idle_ms.
+    void begin(std::uint32_t boot_id, std::uint32_t device_id = 0,
+               bool woke_from_sleep = false);
 
     // Raw button level (true = pressed); the core debounces internally.
     void set_button_level(bool pressed);
@@ -133,6 +148,16 @@ public:
     void apply_pairing(std::uint32_t remote_id, CourtId court_id, TeamId team);
     void clear_pairing();
 
+    // True once the remote has been idle long enough to deep sleep with
+    // nothing outstanding (spec 11.4 step 3). Never true while an intent is in
+    // flight, while advertising, or while the button is down, so sleeping can
+    // not strand an unacknowledged point.
+    bool sleep_due() const;
+
+    // Restarts the inactivity timer. The core calls this on presses, ACKs and
+    // pairing assignments; firmware may call it for its own activity.
+    void note_activity();
+
     RemoteState state() const;
     const RemoteSettings& settings() const { return settings_; }
     std::uint32_t boot_id() const { return boot_id_; }
@@ -143,6 +168,7 @@ public:
         std::uint32_t presses = 0;           // debounced accepted presses
         std::uint32_t presses_suppressed = 0;  // guard / in-flight suppressions
         std::uint32_t intents_sent = 0;      // first transmissions
+        std::uint32_t undos_sent = 0;        // holds that reached undo_hold_ms
         std::uint32_t retries = 0;
         std::uint32_t confirmed = 0;         // Accepted or DuplicateAccepted
         std::uint32_t rejected = 0;
@@ -152,7 +178,8 @@ public:
 
 private:
     void on_debounced_press();
-    void start_intent();
+    void on_debounced_release(std::uint64_t now);
+    void start_intent(protocol::Action action, std::uint64_t held_ms);
     void transmit();
     void persist_baseline_if_needed();
 
@@ -173,11 +200,19 @@ private:
     std::uint64_t level_since_ms_ = 0;
     std::uint64_t last_accepted_press_ms_ = 0;
     std::uint64_t press_started_ms_ = 0;
+    // The current hold still owes an intent: set when a press clears the
+    // guards, cleared once that hold has sent its point or its undo. Sending
+    // the undo clears it too, which is what makes a hold fire only once.
+    bool press_armed_ = false;
 
     // Pairing-advertise state.
     bool advertising_ = false;
     std::uint64_t advertise_until_ms_ = 0;
     std::uint64_t next_advertise_ms_ = 0;
+
+    // Inactivity sleep state.
+    std::uint64_t last_activity_ms_ = 0;
+    bool woke_from_sleep_ = false;
 
     // In-flight intent (stop-and-wait: at most one).
     struct Pending {
