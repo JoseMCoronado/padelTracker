@@ -60,6 +60,18 @@ void on_pair_b(lv_event_t* e) {
     if (s->shared->callbacks.begin_pairing) s->shared->callbacks.begin_pairing(TeamId::B);
 }
 
+void on_unpair_a(lv_event_t* e) { self(e)->open_unpair_dialog(TeamId::A); }
+void on_unpair_b(lv_event_t* e) { self(e)->open_unpair_dialog(TeamId::B); }
+
+void on_dialog_dismiss(lv_event_t* e) { self(e)->close_dialogs(); }
+
+void on_unpair_confirm(lv_event_t* e) {
+    SetupScreen* s = self(e);
+    const TeamId team = s->unpair_target;
+    s->close_dialogs();
+    if (s->shared->callbacks.unpair_remote) s->shared->callbacks.unpair_remote(team);
+}
+
 void on_diagnostics(lv_event_t* e) {
     SetupScreen* s = self(e);
     if (s->shared->callbacks.show_screen) s->shared->callbacks.show_screen(Screen::Diagnostics);
@@ -131,10 +143,38 @@ void SetupScreen::create(Shared* shared_state) {
     lv_obj_set_flex_align(remotes, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
-    remote_a_status = make_label(remotes, tokens::font_body(), tokens::text());
-    make_button(remotes, "PAIR TEAM A", tokens::kTouchTarget, on_pair_a, this);
-    remote_b_status = make_label(remotes, tokens::font_body(), tokens::text());
-    make_button(remotes, "PAIR TEAM B", tokens::kTouchTarget, on_pair_b, this);
+    // One group per team. Grouping matters here: with all six widgets in a
+    // single full-width row, the status labels and the buttons collide once
+    // UNPAIR is showing.
+    const auto remote_group = [&](const char* pair_text, const char* unpair_text,
+                                  lv_event_cb_t on_pair, lv_event_cb_t on_unpair,
+                                  lv_obj_t** status, lv_obj_t** unpair) {
+        lv_obj_t* group = lv_obj_create(remotes);
+        lv_obj_set_size(group, LV_PCT(48), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(group, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(group, 0, 0);
+        lv_obj_set_style_pad_all(group, 0, 0);
+        lv_obj_set_style_pad_column(group, tokens::kSpaceS, 0);
+        lv_obj_set_flex_flow(group, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(group, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
+
+        *status = make_label(group, tokens::font_body(), tokens::text());
+        lv_obj_set_flex_grow(*status, 1);
+
+        make_button(group, pair_text, tokens::kTouchTarget, on_pair, this);
+        // Hidden until the team actually has a remote; a hidden child
+        // collapses out of the row, leaving the PAIR button where it was.
+        *unpair = make_button(group, unpair_text, tokens::kTouchTarget, on_unpair, this);
+        lv_obj_set_style_bg_color(*unpair, tokens::error(), 0);
+        lv_obj_add_flag(*unpair, LV_OBJ_FLAG_HIDDEN);
+    };
+
+    remote_group("PAIR TEAM A", "UNPAIR A", on_pair_a, on_unpair_a, &remote_a_status,
+                 &unpair_a_button);
+    remote_group("PAIR TEAM B", "UNPAIR B", on_pair_b, on_unpair_b, &remote_b_status,
+                 &unpair_b_button);
 
     // Bottom bar: diagnostics + start.
     lv_obj_t* bottom = lv_obj_create(root);
@@ -234,16 +274,46 @@ void SetupScreen::update(const MatchSettings& settings, const LiveViewModel& liv
         fields_initialized = true;
     }
 
-    const auto remote_line = [](const TeamPanelModel& team, const char* prefix) {
+    // Same words and colors as the live screen's remote tags: the buttons
+    // beside each status already name the team, and a longer sentence wraps
+    // against the pair/unpair buttons sharing the row.
+    const auto remote_status = [](lv_obj_t* label, lv_obj_t* unpair,
+                                  const TeamPanelModel& team) {
         if (!team.remote_assigned) {
-            return std::string(prefix) + ": no remote paired";
+            set_text(label, "NO REMOTE");
+            lv_obj_set_style_text_color(label, tokens::text_muted(), 0);
+            lv_obj_add_flag(unpair, LV_OBJ_FLAG_HIDDEN);
+            return;
         }
-        return std::string(prefix) + (team.remote_ok ? ": remote OK" : ": remote paired");
+        set_text(label, team.remote_ok ? "REMOTE OK" : "REMOTE ?");
+        lv_obj_set_style_text_color(
+            label, team.remote_ok ? tokens::success() : tokens::warning(), 0);
+        lv_obj_clear_flag(unpair, LV_OBJ_FLAG_HIDDEN);
     };
-    set_text(remote_a_status, remote_line(live.team_a, "Team A"));
-    set_text(remote_b_status, remote_line(live.team_b, "Team B"));
+    remote_status(remote_a_status, unpair_a_button, live.team_a);
+    remote_status(remote_b_status, unpair_b_button, live.team_b);
 
     update_club(club);
+}
+
+void SetupScreen::open_unpair_dialog(TeamId team) {
+    close_dialogs();
+    unpair_target = team;
+    Dialog dialog = make_dialog(
+        root, team == TeamId::A ? "UNPAIR TEAM A REMOTE?" : "UNPAIR TEAM B REMOTE?",
+        "The court forgets this remote. Hold its button for 5 seconds to pair it again.",
+        on_dialog_dismiss, this);
+    add_dialog_button(dialog, "CANCEL", tokens::surface_raised(), on_dialog_dismiss, this);
+    add_dialog_button(dialog, "UNPAIR", tokens::error(), on_unpair_confirm, this);
+    unpair_dialog = dialog.overlay;
+}
+
+void SetupScreen::close_dialogs() {
+    // Async delete: closing runs from a button inside the dialog being deleted.
+    if (unpair_dialog != nullptr) {
+        lv_obj_del_async(unpair_dialog);
+        unpair_dialog = nullptr;
+    }
 }
 
 }  // namespace padel::ui::internal

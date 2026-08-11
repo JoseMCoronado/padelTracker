@@ -28,8 +28,8 @@ Rules enforced by `PairingService`:
 
 - Requests are ignored when no window is open.
 - A remote currently assigned to the *other* team is never silently
-  replaced; the organizer must unassign it first (diagnostics screen /
-  future roster UI). Re-pairing to the same team refreshes in place.
+  replaced; the organizer must unpair it first (see below). Re-pairing to
+  the same team refreshes in place.
 - The newest advertising remote wins the candidate slot while the window is
   open; the window times out after 30 s.
 - Confirmed assignments are persisted immediately and restored on boot
@@ -45,6 +45,45 @@ Packets (`components/protocol`, CRC16-framed like all traffic):
 In the desktop simulator: `PAIR TEAM A/B` on the setup screen opens the
 window, `p` puts that team's remote into pairing mode, `CONFIRM` completes
 the flow. Pairings persist in `court-sim-data/pairings.txt`.
+
+## Unpairing
+
+Pairing is stored on both sides, so unpairing has to clear both: the court
+holds the allow-list, and the remote independently holds `paired` plus its
+court and team in its own NVS. A remote that still believes it is paired
+would keep transmitting rejected points and could never advertise again,
+since the 5 s hold gesture is gated on being unpaired.
+
+```
+organizer (court touchscreen)                remote
+─────────────────────────────                ──────
+Setup screen -> UNPAIR A/B -> confirm
+  every remote on that team dropped
+  from the allow-list and from NVS
+                                             still paired, unaware
+                                             presses the button
+POINT_INTENT                  <──────────────
+  no assignment for this remote
+  ACK RejectedUnpaired         ──────────────>  court_id matches ours, so
+                                                clear_pairing(): drop paired,
+                                                court_id and team (NVS),
+                                                PairingRequired feedback
+                                                -> hold 5 s to pair again
+```
+
+The rejection ACK is the only signal used. Nothing is broadcast at unpair
+time, because a remote asleep in a kit bag (15 min inactivity timeout)
+would miss it; healing on the next press needs no delivery guarantee and no
+new packet type. The `court_id` check on the ACK keeps a neighbouring court
+on the same channel from wiping a pairing.
+
+`clear_pairing()` deliberately keeps `remote_id` (hardware-derived and
+stable) and `sequence_baseline` — the baseline must never go backwards or a
+re-pair could replay an identity the court already recorded (spec 11.5).
+
+The UNPAIR button on the setup screen appears only while that team has a
+remote, and drops *every* remote assigned to the team rather than only the
+one the status line showed, since the allow-list permits several per team.
 
 ## ESP-NOW key provisioning (PMK / LMK)
 

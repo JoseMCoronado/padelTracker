@@ -64,6 +64,12 @@ void CourtUi::debug_open_reset_dialog(int step) {
     }
 }
 
+void CourtUi::debug_open_unpair_dialog(TeamId team) {
+    if (screens_->created) {
+        screens_->setup.open_unpair_dialog(team);
+    }
+}
+
 MatchSettings CourtUi::debug_read_settings() const {
     return screens_->created ? screens_->setup.read_settings() : MatchSettings{};
 }
@@ -77,6 +83,7 @@ void CourtUi::render(const UiModel& model) {
     if (model.screen != s.current) {
         s.live.close_dialogs();
         s.live.close_organizer_menu();
+        s.setup.close_dialogs();
         lv_obj_t* root = nullptr;
         switch (model.screen) {
             case Screen::Setup: root = s.setup.root; break;

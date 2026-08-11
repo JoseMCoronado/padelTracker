@@ -413,7 +413,16 @@ extern "C" void app_main(void) {
                                                             static_cast<size_t>(frame.len));
                 if (ack) {
                     radio.learn_court(frame.mac);
+                    // The court dropping us is silent otherwise: the core just
+                    // stops being paired, and on hardware that is the
+                    // difference between "hold to pair" working and not.
+                    const bool was_paired = core.settings().paired;
                     core.on_ack(ack.value());
+                    if (was_paired && !core.settings().paired) {
+                        ESP_LOGW(TAG, "unpaired by court %u: hold %d s to pair again",
+                                 static_cast<unsigned>(ack.value().court_id),
+                                 static_cast<int>(core_config.pairing_hold_ms / 1000));
+                    }
                 }
             } else if (type.value() == padel::protocol::MessageType::PairAssign) {
                 const auto assign = padel::protocol::parse_pair_assign(

@@ -13,6 +13,7 @@
 
 #include "../application/fakes.hpp"
 #include "padel/application/court_service.hpp"
+#include "padel/application/pairing.hpp"
 #include "padel/persistence/file_backend.hpp"
 #include "padel/persistence/journal.hpp"
 #include "padel/remote/remote_core.hpp"
@@ -103,7 +104,128 @@ struct SimCourt {
     }
 };
 
+// Loses nothing and records what the court hands back, for the pairing tests
+// where the interesting part is the sequence of events, not the retry logic.
+class DirectRadio : public remote::IRadio {
+public:
+    void send_intent(const protocol::PointIntentPacket& packet) override {
+        intents.push_back(packet);
+    }
+    void send_pair_request(const protocol::PairRequestPacket& packet) override {
+        pair_requests.push_back(packet);
+    }
+    std::vector<protocol::PointIntentPacket> intents{};
+    std::vector<protocol::PairRequestPacket> pair_requests{};
+};
+
+class FakeCourtSettings : public ISettings {
+public:
+    std::vector<StoredAssignment> load_assignments() override { return stored; }
+    bool save_assignments(const std::vector<StoredAssignment>& assignments) override {
+        stored = assignments;
+        return true;
+    }
+    std::vector<StoredAssignment> stored{};
+};
+
 }  // namespace
+
+TEST_CASE("a clicker unpaired at the court heals itself and re-pairs to the other team") {
+    FakeClock clock;
+    RemoteClockAdapter remote_clock(clock);
+    FakeEventStore court_store;
+    CourtService court{CourtServiceConfig{kCourt, kWindowMs},
+                       domain::preset_standard_advantage(), court_store, clock};
+    FakeCourtSettings court_settings;
+    PairingService pairing{PairingService::Config{kCourt, 6, 30'000}, court, court_settings,
+                           clock};
+
+    DirectRadio radio;
+    NullFeedback feedback;
+    MemoryStore store;
+    remote::RemoteCore clicker{remote::RemoteCoreConfig{}, remote_clock, radio, feedback, store};
+    clicker.begin(0x0A000001, 0xA1);
+
+    const auto step_world = [&](int ms) {
+        for (int i = 0; i < ms; ++i) {
+            clock.advance(1);
+            clicker.poll();
+            for (const auto& request : radio.pair_requests) {
+                pairing.handle_pair_request(request);
+            }
+            radio.pair_requests.clear();
+            for (const auto& intent : radio.intents) {
+                court.handle_point_intent(intent);
+            }
+            radio.intents.clear();
+            court.tick();
+            for (const protocol::AckPacket& ack : court.drain_acks()) {
+                clicker.on_ack(ack);
+            }
+        }
+    };
+
+    // Settles past the court's conflict window so a scored point has been
+    // committed by the time the caller looks at the state.
+    const auto hold = [&](int ms) {
+        clicker.set_button_level(true);
+        step_world(ms);
+        clicker.set_button_level(false);
+        step_world(60 + 2 * static_cast<int>(kWindowMs));
+    };
+
+    // --- Pair to team A -----------------------------------------------------
+    pairing.begin(TeamId::A);
+    clicker.set_button_level(true);
+    step_world(5100);  // long hold while unpaired starts advertising
+    clicker.set_button_level(false);
+    step_world(600);
+    REQUIRE(pairing.candidate().has_value());
+    const auto assign = pairing.confirm();
+    REQUIRE(assign.has_value());
+    clicker.on_pair_assign(*assign);
+    REQUIRE(clicker.settings().paired);
+    REQUIRE(clicker.settings().team == TeamId::A);
+
+    REQUIRE(court.start_match(TeamId::A).has_value());
+    step_world(800);  // clear the retrigger guard
+    hold(250);
+    REQUIRE(court.state().current_game.raw_points_a == 1);
+
+    // --- Organizer unpairs team A at the court -----------------------------
+    while (const auto info = court.remote_info(TeamId::A)) {
+        pairing.unassign(info->remote_id);
+    }
+    CHECK(court_settings.stored.empty());
+    // The clicker has not heard about it yet.
+    CHECK(clicker.settings().paired);
+
+    // The next press is rejected, and that rejection is what clears it.
+    step_world(800);
+    hold(250);
+    CHECK(court.state().current_game.raw_points_a == 1);  // no point scored
+    CHECK_FALSE(clicker.settings().paired);
+    CHECK(clicker.state() == remote::RemoteState::PairingRequired);
+
+    // --- Re-pair the same clicker to team B --------------------------------
+    step_world(800);
+    pairing.begin(TeamId::B);
+    clicker.set_button_level(true);
+    step_world(5100);
+    clicker.set_button_level(false);
+    step_world(600);
+    REQUIRE(pairing.candidate().has_value());
+    const auto reassign = pairing.confirm();
+    REQUIRE(reassign.has_value());
+    CHECK(reassign->team == TeamId::B);
+    clicker.on_pair_assign(*reassign);
+    REQUIRE(clicker.settings().paired);
+    CHECK(clicker.settings().team == TeamId::B);
+
+    step_world(800);
+    hold(250);
+    CHECK(court.state().current_game.raw_points_b == 1);
+}
 
 TEST_CASE("real remote logic vs real court over a lossy channel, exactly once") {
     FakeClock clock;

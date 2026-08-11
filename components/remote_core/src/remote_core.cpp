@@ -9,9 +9,12 @@ FeedbackPattern feedback_for(protocol::AckStatus status) {
             return FeedbackPattern::Accepted;
         case protocol::AckStatus::RejectedConflict:
             return FeedbackPattern::RejectedConflict;
+        case protocol::AckStatus::RejectedUnpaired:
+            // The court has forgotten us, so the cue that matters is the one
+            // that tells the player to re-pair, not a generic reject.
+            return FeedbackPattern::PairingRequired;
         case protocol::AckStatus::RejectedNotInMatch:
         case protocol::AckStatus::RejectedWrongTeam:
-        case protocol::AckStatus::RejectedUnpaired:
         case protocol::AckStatus::RejectedPaused:
         case protocol::AckStatus::RejectedInvalidPacket:
         case protocol::AckStatus::RejectedNothingToUndo:
@@ -85,6 +88,11 @@ void RemoteCore::apply_pairing(std::uint32_t remote_id, CourtId court_id, TeamId
 
 void RemoteCore::clear_pairing() {
     settings_.paired = false;
+    settings_.court_id = 0;
+    settings_.team = TeamId::A;
+    // remote_id and sequence_baseline deliberately survive: the id is
+    // hardware-derived and stable, and the baseline must never go backwards
+    // or a re-pair could reuse an identity the court already saw (spec 11.5).
     store_.save(settings_);
 }
 
@@ -219,6 +227,14 @@ void RemoteCore::on_ack(const protocol::AckPacket& ack) {
     }
     feedback_.play(pattern);
     pending_.reset();
+    // The organizer unpaired us at the court. Drop our own credentials so the
+    // long hold can advertise again — this is the only signal we get, since a
+    // remote asleep in a bag would miss anything broadcast at unpair time. The
+    // court-id guard keeps a neighbouring court from wiping the pairing.
+    if (ack.status == protocol::AckStatus::RejectedUnpaired &&
+        ack.court_id == settings_.court_id) {
+        clear_pairing();
+    }
 }
 
 void RemoteCore::poll() {

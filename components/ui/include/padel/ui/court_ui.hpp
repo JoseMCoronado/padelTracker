@@ -26,6 +26,10 @@ struct UiCallbacks {
     std::function<void(TeamId)> begin_pairing;
     std::function<void()> cancel_pairing;
     std::function<void()> confirm_pairing;
+    // Drops every remote assigned to the team from the court allow-list. The
+    // remote itself clears its credentials the next time it is pressed and
+    // the court answers RejectedUnpaired.
+    std::function<void(TeamId)> unpair_remote;
     std::function<void(bool resume)> recovery_choice;      // resume vs discard
     std::function<void()> test_beep;                       // diagnostics buzzer test
 
@@ -67,6 +71,7 @@ public:
     void debug_open_organizer_menu(bool open);
     void debug_open_undo_dialog();
     void debug_open_reset_dialog(int step);
+    void debug_open_unpair_dialog(TeamId team);
     MatchSettings debug_read_settings() const;
 
     // Setup-screen edits live inside LVGL widgets; the host reads them back

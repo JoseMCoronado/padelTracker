@@ -145,9 +145,17 @@ struct SetupScreen {
     lv_obj_t* server_dropdown = nullptr;
     lv_obj_t* remote_a_status = nullptr;
     lv_obj_t* remote_b_status = nullptr;
+    // Shown only while that team has a remote in the allow-list.
+    lv_obj_t* unpair_a_button = nullptr;
+    lv_obj_t* unpair_b_button = nullptr;
+    lv_obj_t* unpair_dialog = nullptr;  // created on demand
+    TeamId unpair_target = TeamId::A;
     lv_obj_t* start_label = nullptr;  // START MATCH / START CLUB ROUND
     lv_obj_t* keyboard = nullptr;
     bool fields_initialized = false;
+
+    void open_unpair_dialog(TeamId team);
+    void close_dialogs();
 
     // --- Club round row + player picker modal (screen_club.cpp) -----------
     void create_club_row(lv_obj_t* parent);

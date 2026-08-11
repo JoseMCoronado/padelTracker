@@ -241,9 +241,11 @@ TEST_CASE("setup screen fits vertically in both modes: bottom bar on screen") {
             // whole non-scrollable setup screen fits.
             if (text.find(start_text) != std::string::npos ||
                 text.find("DIAGNOSTICS") != std::string::npos) {
+                // The button, not just its text: a tap target whose lower half
+                // is off the panel is still a broken layout.
                 lv_area_t coords;
-                lv_obj_get_coords(label, &coords);
-                INFO("label text: " << text);
+                lv_obj_get_coords(lv_obj_get_parent(label), &coords);
+                INFO("button text: " << text);
                 CHECK(coords.y1 >= 0);
                 CHECK(coords.y2 < kHeight);
                 ++checked;
@@ -490,6 +492,46 @@ TEST_CASE("confirmation dialogs are finger-sized and cancel closes them") {
     require_finger_sized("CLOSE");
     tap("CLOSE");
     CHECK(find_label("UNDO LAST POINT") == nullptr);
+}
+
+TEST_CASE("UNPAIR appears only for a team that has a remote, and confirms first") {
+    ui::UiModel m = stress_model(ui::Screen::Setup);
+    m.live.team_a.remote_assigned = false;
+    m.live.team_b.remote_assigned = true;
+    court_ui().render(m);
+    settle();
+    // Hidden buttons are skipped by collect_labels, so absence is invisibility.
+    CHECK(find_label("UNPAIR A") == nullptr);
+    CHECK(find_label("UNPAIR B") != nullptr);
+    CHECK(find_label("NO REMOTE") != nullptr);
+
+    m.live.team_a.remote_assigned = true;
+    court_ui().render(m);
+    settle();
+    CHECK(find_label("UNPAIR A") != nullptr);
+    require_labels_in_bounds();
+
+    // Unpairing is a confirmed action, never a single stray tap.
+    court_ui().debug_open_unpair_dialog(TeamId::A);
+    settle();
+    REQUIRE(find_label("UNPAIR TEAM A REMOTE?") != nullptr);
+    require_labels_in_bounds();
+
+    lv_obj_t* cancel = find_label("CANCEL");
+    REQUIRE(cancel != nullptr);
+    lv_area_t coords;
+    lv_obj_get_coords(lv_obj_get_parent(cancel), &coords);
+    s_pointer.point.x = (coords.x1 + coords.x2) / 2;
+    s_pointer.point.y = (coords.y1 + coords.y2) / 2;
+    for (const bool pressed : {true, false}) {
+        s_pointer.pressed = pressed;
+        for (int i = 0; i < 6; ++i) {
+            lv_tick_inc(16);
+            lv_timer_handler();
+            court_ui().render(m);
+        }
+    }
+    CHECK(find_label("UNPAIR TEAM A REMOTE?") == nullptr);
 }
 
 TEST_CASE("special scoring states render distinct label text") {

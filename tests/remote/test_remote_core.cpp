@@ -308,6 +308,9 @@ TEST_CASE("terminal rejections map through the centralized feedback table") {
           FeedbackPattern::RejectedOther);
     CHECK(feedback_for(protocol::AckStatus::RejectedNothingToUndo) ==
           FeedbackPattern::RejectedOther);
+    // The court forgot us: say "pair me" rather than a generic reject.
+    CHECK(feedback_for(protocol::AckStatus::RejectedUnpaired) ==
+          FeedbackPattern::PairingRequired);
     CHECK(feedback_for(protocol::AckStatus::ErrorStorage) == FeedbackPattern::CommFailed);
 
     Fixture f;
@@ -414,6 +417,51 @@ TEST_CASE("pairing advertise times out back to PairingRequired") {
     f.core.enter_pairing_mode();
     f.run(61'000);
     CHECK(f.core.state() == RemoteState::PairingRequired);
+}
+
+// --- Unpairing (organizer drops the remote at the court) --------------------
+
+TEST_CASE("a RejectedUnpaired ACK makes the remote forget its court") {
+    Fixture f;
+    f.press();
+    f.core.on_ack(f.ack_for(f.radio.sent.front(), protocol::AckStatus::RejectedUnpaired));
+
+    CHECK(f.core.state() == RemoteState::PairingRequired);
+    CHECK_FALSE(f.core.settings().paired);
+    CHECK(f.core.settings().court_id == 0);
+    // The identity survives so a re-pair cannot replay a sequence the court
+    // has already seen.
+    CHECK(f.core.settings().remote_id == 0xA1);
+    REQUIRE(f.store.stored.has_value());
+    CHECK_FALSE(f.store.stored->paired);
+    CHECK(f.store.stored->sequence_baseline > f.core.last_sequence());
+    CHECK(f.feedback.count(FeedbackPattern::PairingRequired) == 1);
+}
+
+TEST_CASE("a RejectedUnpaired ACK from another court is not obeyed") {
+    Fixture f;
+    f.press();
+    protocol::AckPacket foreign =
+        f.ack_for(f.radio.sent.front(), protocol::AckStatus::RejectedUnpaired);
+    foreign.court_id = 42;  // a neighbouring court on the same channel
+    f.core.on_ack(foreign);
+    CHECK(f.core.settings().paired);
+    CHECK(f.core.settings().court_id == 1);
+}
+
+TEST_CASE("a remote unpaired at the court can advertise again") {
+    Fixture f;
+    f.press();
+    f.core.on_ack(f.ack_for(f.radio.sent.front(), protocol::AckStatus::RejectedUnpaired));
+    REQUIRE(f.core.state() == RemoteState::PairingRequired);
+    f.run(800);  // clear the retrigger guard
+
+    f.core.set_button_level(true);
+    f.run(5100);
+    CHECK(f.core.state() == RemoteState::PairingAdvertise);
+    f.run(600);
+    REQUIRE_FALSE(f.radio.pair_requests.empty());
+    CHECK(f.radio.pair_requests.front().remote_id == 0xA1);
 }
 
 TEST_CASE("baseline is only rewritten when the chunk is exhausted") {
