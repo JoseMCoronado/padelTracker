@@ -14,8 +14,9 @@ using namespace padel;
 namespace {
 
 const std::vector<sound::Cue> kAllCues = {
-    sound::Cue::PointScored, sound::Cue::RemoteUndo, sound::Cue::PairingConfirmed,
-    sound::Cue::MatchComplete, sound::Cue::SelfTest,
+    sound::Cue::PointScored,  sound::Cue::GameComplete,     sound::Cue::SetComplete,
+    sound::Cue::RemoteUndo,   sound::Cue::PairingConfirmed, sound::Cue::MatchComplete,
+    sound::Cue::SelfTest,
 };
 
 // The audible shape of a cue: rests carry no pitch, so they are not what makes
@@ -92,6 +93,15 @@ TEST_CASE("the point cue is short enough for back-to-back points") {
     // swallow its predecessor's cue.
     CHECK(point_ms <= 200);
     CHECK(point_ms < sound::duration_ms(sound::pattern_for(sound::Cue::RemoteUndo)));
+}
+
+TEST_CASE("point, game, set and match cues escalate in length") {
+    const auto ms = [](sound::Cue cue) { return sound::duration_ms(sound::pattern_for(cue)); };
+    // Only one of these plays per point, so their lengths are what tells a
+    // listener how far the match just moved.
+    CHECK(ms(sound::Cue::PointScored) < ms(sound::Cue::GameComplete));
+    CHECK(ms(sound::Cue::GameComplete) < ms(sound::Cue::SetComplete));
+    CHECK(ms(sound::Cue::SetComplete) < ms(sound::Cue::MatchComplete));
 }
 
 TEST_CASE("duration_ms sums every step, rests included") {

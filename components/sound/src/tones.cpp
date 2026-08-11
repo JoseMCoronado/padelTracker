@@ -19,6 +19,16 @@ constexpr std::uint16_t kC8 = 4186;
 // carry across a court. Anything below ~2.5 kHz is audibly weaker on it.
 constexpr Tone kPointScored[] = {{kG7, 45}, {kC8, 80}};
 
+// The milestones escalate in both length and steps, so a listener who only
+// catches the tail of one still knows how far the match moved: a game is the
+// point cue's rise with one more step, a set is long enough to cover a
+// changeover, and the match fanfare below is longer again.
+constexpr Tone kGameComplete[] = {{kE7, 70}, {kG7, 70}, {kC8, 140}};
+
+// Rise, dip, rise: a different contour rather than a longer game cue, because
+// length alone is what a court cannot hear (ADR-0018).
+constexpr Tone kSetComplete[] = {{kC7, 90}, {kG7, 90}, {kE7, 90}, {kC8, 210}};
+
 // An undo fires with nobody near the court unit, so it must not be mistaken
 // for a score. It keeps the loud notes and separates itself by shape instead:
 // a three-step descending run, five times longer than a point.
@@ -41,6 +51,10 @@ Pattern pattern_for(Cue cue) {
     switch (cue) {
         case Cue::PointScored:
             return {kPointScored, std::size(kPointScored), "point"};
+        case Cue::GameComplete:
+            return {kGameComplete, std::size(kGameComplete), "game complete"};
+        case Cue::SetComplete:
+            return {kSetComplete, std::size(kSetComplete), "set complete"};
         case Cue::RemoteUndo:
             return {kRemoteUndo, std::size(kRemoteUndo), "undo"};
         case Cue::PairingConfirmed:

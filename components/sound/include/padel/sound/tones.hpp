@@ -21,6 +21,8 @@ struct Tone {
 // and a fall are not (ADR-0018).
 enum class Cue : std::uint8_t {
     PointScored,
+    GameComplete,
+    SetComplete,
     RemoteUndo,
     PairingConfirmed,
     MatchComplete,

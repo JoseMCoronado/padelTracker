@@ -185,6 +185,13 @@ std::string wired_button_value(const WiredButton& button) {
            std::to_string(button.presses()) + " presses";
 }
 
+// Games played in the set under way. A finished game shows up here as a step
+// up, which is how the buzzer hears one: the reducer stores no GameWon event
+// (ADR-0003).
+std::uint8_t games_in_current_set(const domain::MatchState& state) {
+    return static_cast<std::uint8_t>(state.current_set.games_a + state.current_set.games_b);
+}
+
 // --- UI command queue (LVGL task -> app task) --------------------------------
 
 struct AppCommand {
@@ -201,6 +208,7 @@ struct AppCommand {
         BeginPairing,
         CancelPairing,
         ConfirmPairing,
+        UnpairRemote,
         RecoveryChoice,
         TestBeep,
         CreatePlayer,
@@ -276,6 +284,8 @@ struct CourtApp {
     std::uint64_t flash_until_ms = 0;
     std::uint8_t prev_points_a = 0;
     std::uint8_t prev_points_b = 0;
+    std::uint8_t prev_completed_sets = 0;
+    std::uint8_t prev_games_in_set = 0;
     std::uint32_t acked_remote_undos = 0;
     domain::MatchLifecycle prev_lifecycle = domain::MatchLifecycle::NotStarted;
     bool storage_degraded = false;
@@ -332,6 +342,9 @@ struct CourtApp {
         prev_lifecycle = service->state().lifecycle;
         prev_points_a = service->state().current_game.raw_points_a;
         prev_points_b = service->state().current_game.raw_points_b;
+        // A restored journal must not sound the milestones it already played.
+        prev_completed_sets = service->state().completed_set_count;
+        prev_games_in_set = games_in_current_set(service->state());
 
         const auto lifecycle = service->state().lifecycle;
         if (lifecycle == domain::MatchLifecycle::Active ||
@@ -542,6 +555,13 @@ struct CourtApp {
                 }
                 model.screen = ui::Screen::Setup;
                 break;
+            case Type::UnpairRemote:
+                // The allow-list permits several remotes per team, so drain
+                // the team rather than dropping only the one the UI showed.
+                while (const auto info = service->remote_info(command.team)) {
+                    pairing->unassign(info->remote_id);
+                }
+                break;
             case Type::RecoveryChoice:
                 if (command.resume) {
                     model.screen = ui::Screen::Live;
@@ -679,9 +699,19 @@ struct CourtApp {
         prev_points_a = points_a;
         prev_points_b = points_b;
 
-        if (state.lifecycle == domain::MatchLifecycle::Completed &&
-            prev_lifecycle != domain::MatchLifecycle::Completed &&
-            model.screen == ui::Screen::Live) {
+        // Milestone cues, loudest thing first: a point that ends the match says
+        // only that, and one that ends a set says only that, never both.
+        const std::uint8_t completed_sets = state.completed_set_count;
+        const std::uint8_t games_in_set = games_in_current_set(state);
+        const bool match_completed_edge = state.lifecycle == domain::MatchLifecycle::Completed &&
+                                          prev_lifecycle != domain::MatchLifecycle::Completed;
+        // An undo that reopens a set puts its games back, so both counters can
+        // climb with nothing having been won. Only a forward step is a milestone.
+        const bool rewound = completed_sets < prev_completed_sets ||
+                             (prev_lifecycle == domain::MatchLifecycle::Completed &&
+                              state.lifecycle != domain::MatchLifecycle::Completed);
+
+        if (match_completed_edge && model.screen == ui::Screen::Live) {
             // The finished mini-set feeds the club round; CONTINUE on the
             // summary then moves on to the mix or the standings.
             if (club_active) {
@@ -699,8 +729,16 @@ struct CourtApp {
             }
             model.screen = ui::Screen::Live;
             ESP_LOGI(TAG, "undo reopened the match");
+        } else if (!match_completed_edge && !rewound) {
+            if (completed_sets > prev_completed_sets) {
+                buzzer::play(sound::Cue::SetComplete);
+            } else if (games_in_set > prev_games_in_set) {
+                buzzer::play(sound::Cue::GameComplete);
+            }
         }
         prev_lifecycle = state.lifecycle;
+        prev_completed_sets = completed_sets;
+        prev_games_in_set = games_in_set;
 
         model.settings = settings;
         model.live = ui::build_live_model(*service, settings, now);
@@ -771,6 +809,9 @@ ui::UiCallbacks make_callbacks() {
     };
     cb.cancel_pairing = []() { push_command({.type = AppCommand::Type::CancelPairing}); };
     cb.confirm_pairing = []() { push_command({.type = AppCommand::Type::ConfirmPairing}); };
+    cb.unpair_remote = [](TeamId team) {
+        push_command({.type = AppCommand::Type::UnpairRemote, .team = team});
+    };
     cb.recovery_choice = [](bool resume) {
         push_command({.type = AppCommand::Type::RecoveryChoice, .resume = resume});
     };

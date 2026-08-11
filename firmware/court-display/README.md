@@ -61,6 +61,12 @@ pitch shape rather than length (ADR-0018): a point rises, a remote undo falls,
 pairing climbs three notes, a finished match plays a fanfare, and BEEP TEST on
 the diagnostics screen sweeps 1-5 kHz to locate the element's resonance.
 
+The four scoring cues are a ladder — point, game, set, match, each longer than
+the last — and only the highest one a point reaches plays. The winning point of
+a game sounds the game cue and not the point cue; the point that takes the set
+sounds only the set cue; and in a club mini-set, where the set *is* the match,
+only the match fanfare plays.
+
 ## Storage
 
 - `storage` partition (8 MB LittleFS) holds `journal.bin`; a fresh match

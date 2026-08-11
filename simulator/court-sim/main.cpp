@@ -132,6 +132,13 @@ struct SimRemote {
     }
 };
 
+// Games played in the set under way. A finished game shows up here as a step
+// up, which is how the buzzer hears one: the reducer stores no GameWon event
+// (ADR-0003).
+std::uint8_t games_in_current_set(const domain::MatchState& state) {
+    return static_cast<std::uint8_t>(state.current_set.games_a + state.current_set.games_b);
+}
+
 struct App {
     SteadyClock clock{};
     sim::SdlBackend backend_sdl{};
@@ -167,6 +174,8 @@ struct App {
     std::uint64_t flash_until_ms = 0;
     std::uint8_t prev_points_a = 0;
     std::uint8_t prev_points_b = 0;
+    std::uint8_t prev_completed_sets = 0;
+    std::uint8_t prev_games_in_set = 0;
     domain::MatchLifecycle prev_lifecycle = domain::MatchLifecycle::NotStarted;
     std::uint32_t acked_remote_undos = 0;
     std::vector<std::string> log_lines;
@@ -317,6 +326,9 @@ struct App {
         prev_lifecycle = service->state().lifecycle;
         prev_points_a = service->state().current_game.raw_points_a;
         prev_points_b = service->state().current_game.raw_points_b;
+        // A restored journal must not sound the milestones it already played.
+        prev_completed_sets = service->state().completed_set_count;
+        prev_games_in_set = games_in_current_set(service->state());
 
         const auto lifecycle = service->state().lifecycle;
         if (lifecycle == domain::MatchLifecycle::Active ||
@@ -505,6 +517,16 @@ struct App {
                 play_cue(sound::Cue::PairingConfirmed);
             }
             model.screen = ui::Screen::Setup;
+        };
+        cb.unpair_remote = [this](TeamId team) {
+            // The allow-list permits several remotes per team, so drain the
+            // team rather than dropping only the one the UI showed. The remote
+            // keeps its own credentials until the court rejects its next
+            // press, exactly as on hardware.
+            while (const auto info = service->remote_info(team)) {
+                pairing->unassign(info->remote_id);
+            }
+            log(std::string("TEAM ") + (team == TeamId::A ? "A" : "B") + " remote unpaired");
         };
         cb.recovery_choice = [this](bool resume) {
             if (resume) {
@@ -725,9 +747,20 @@ struct App {
         // so REVIEW / CORRECT can go back to the live screen). In a club
         // round the finished mini-set feeds the controller instead, and the
         // flow continues on the mix or standings screen.
-        if (state.lifecycle == domain::MatchLifecycle::Completed &&
-            prev_lifecycle != domain::MatchLifecycle::Completed &&
-            model.screen == ui::Screen::Live) {
+        //
+        // Milestone cues, loudest thing first: a point that ends the match says
+        // only that, and one that ends a set says only that, never both.
+        const std::uint8_t completed_sets = state.completed_set_count;
+        const std::uint8_t games_in_set = games_in_current_set(state);
+        const bool match_completed_edge = state.lifecycle == domain::MatchLifecycle::Completed &&
+                                          prev_lifecycle != domain::MatchLifecycle::Completed;
+        // An undo that reopens a set puts its games back, so both counters can
+        // climb with nothing having been won. Only a forward step is a milestone.
+        const bool rewound = completed_sets < prev_completed_sets ||
+                             (prev_lifecycle == domain::MatchLifecycle::Completed &&
+                              state.lifecycle != domain::MatchLifecycle::Completed);
+
+        if (match_completed_edge && model.screen == ui::Screen::Live) {
             if (club_active) {
                 club->on_set_complete(state);
             }
@@ -743,8 +776,16 @@ struct App {
             }
             model.screen = ui::Screen::Live;
             log("undo reopened the match");
+        } else if (!match_completed_edge && !rewound) {
+            if (completed_sets > prev_completed_sets) {
+                play_cue(sound::Cue::SetComplete);
+            } else if (games_in_set > prev_games_in_set) {
+                play_cue(sound::Cue::GameComplete);
+            }
         }
         prev_lifecycle = state.lifecycle;
+        prev_completed_sets = completed_sets;
+        prev_games_in_set = games_in_set;
 
         // Assemble the frame model.
         model.settings = settings;

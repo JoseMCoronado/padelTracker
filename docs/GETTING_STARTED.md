@@ -151,7 +151,11 @@ count, so you can prove the wiring without scoring a point. BEEP TEST there
 plays a 1-5 kHz stepped sweep: it proves the buzzer works, and the step that
 rings loudest is the element's resonance — if it is nowhere near the cue tones
 in `components/sound/src/tones.cpp`, move them. Then press the buttons for
-real — each one scores for its team, with the rising two-note point cue.
+real — each one scores for its team, with the rising two-note point cue. Keep
+pressing until a game falls: the point that wins it plays a longer three-note
+cue instead of the point one, a finished set is longer again, and the match
+fanfare replaces both when the last point lands. Only the highest of the four
+ever plays.
 
 ## Step 6 — Spare DevKit as the missing remote
 

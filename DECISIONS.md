@@ -519,8 +519,9 @@ centralized in one module" rules out, and which left court-sim with a stub
 that logged "BEEP" and proved nothing.
 
 Decision: Drive a **passive** element with LEDC and give every cue its own
-pitch shape. A point rises two notes, a remote undo falls two low ones,
-pairing climbs three, a finished match plays a short fanfare. The patterns
+pitch shape. A point rises two notes, a finished game rises three, a
+finished set rises, dips and rises again, a finished match plays a short
+fanfare, a remote undo falls, and pairing climbs three. The patterns
 are data in a portable `components/sound`, so the firmware, the simulator
 and the native tests all read the same table; `main/buzzer.cpp` is the only
 code that touches the pin. `PADEL_COURT_BUZZER_PASSIVE=n` keeps an active
@@ -543,14 +544,27 @@ three-step descending run against a two-step rise, five times as long.
 Pitch is what makes a cue audible here; contour and length are what make it
 identifiable.
 
+The four scoring cues form one ladder — point 125 ms, game 280, set 480,
+match 710 — and exactly one of them plays per point: the highest rung the
+point reached. A point that wins a game is not also a point, a point that
+wins a set is not also a game, and a club mini-set that ends the match says
+only that. Two cues at once would be one indistinct noise, and stacking them
+would tell a listener less than the single longest one does. The reducer
+stores no GameWon or SetWon event (ADR-0003), so the rung is read from the
+state the frame loop already diffs for the point flash: `completed_set_count`
+for a set, the games in `current_set` for a game. That diff has to ignore
+backwards steps, because an undo that reopens a set puts its games back and
+would otherwise sound like one being won.
+
 Consequences: Cues got longer — a point is 125 ms against the old 80, a
 completed match 710 against 400 — which is affordable because rallies are
 seconds apart, and a native test pins the point cue under 200 ms so
 back-to-back points cannot swallow each other. Tone choice is now a design
 surface that can be got wrong, so the tests assert the properties that
 matter rather than the numbers: no two cues share a pitch sequence, a point
-rises, an undo falls, and the undo has more steps and runs at least three
-times longer. This does not make the unit capable of music. A piezo's volume
+rises, an undo falls, the undo has more steps and runs at least three times
+longer, and point/game/set/match run strictly longer in that order. This does
+not make the unit capable of music. A piezo's volume
 varies wildly with pitch, so melodies come out uneven and thin; real audio
 would mean an I2S DAC, an amplifier and a speaker, and the 7B has no pins
 left for it.
