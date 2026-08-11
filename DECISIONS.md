@@ -568,3 +568,74 @@ not make the unit capable of music. A piezo's volume
 varies wildly with pitch, so melodies come out uneven and thin; real audio
 would mean an I2S DAC, an amplifier and a speaker, and the 7B has no pins
 left for it.
+
+## ADR-0019: Court Li-ion SoC from expander ADC; brightness from ORGANIZER menu
+
+Status: Accepted
+
+Context: The Waveshare ESP32-S3-Touch-LCD-7B has a PH2.0 single-cell header,
+CS8501 charge/boost, CH32V003 ADC (`0x06`) and backlight PWM (`0x05`). P0
+adds a CITYORK 3.7 V 2000 mAh 103450 cell. Organizers need battery percent
+on the live strip, estimated runtime on diagnostics, and mid-match dimming
+without leaving the scoreboard.
+
+Decision: Read battery millivolts from the expander ADC with the documented
+3:1 divider (`mv = raw * 9900 / 1023`). Convert to SoC with a piecewise
+Li-ion OCV curve in portable `padel/common/battery.hpp`; treat readings
+below ~2.5 V as unknown / no cell. Estimate remaining runtime as
+`capacity × SoC / assumed_draw` with capacity 2000 mAh and draw ~475 mA
+(from the board’s 5 V / 350 mA figure through boost) — label it as an
+estimate until a discharge measurement replaces the constant. Show percent
+on the Live header; voltage, percent and runtime on Diagnostics.
+
+Drive brightness from the Live ORGANIZER menu (slider 10–100%). Register
+`0x05` PWM is **inverted** (AP3032 FB): higher duty dims. Map 100% → duty
+~30 and low percent → ~240; never write ≥ 248. The blank screen on first
+enable was 100% incorrectly mapped to duty 247. Persist percent in NVS.
+
+Consequences: Court battery UI is independent of remote `battery_mv`
+(still protocol-ready, measurement not implemented). Runtime is only as
+good as the draw assumption. Brightness control is mid-match and NVS-
+sticky across reboot.
+
+## ADR-0020: Two-stage idle backlight dim, and the waking tap never scores
+
+Status: Accepted
+
+Context: The backlight is by far the largest draw on the court unit, so a
+panel left bright between sessions burns the 2000 mAh cell for nothing. The
+organizer brightness slider (ADR-0019) must keep working, and the court
+cannot afford a phantom point when someone taps a dark screen to see it.
+
+Decision: Run a two-stage idle policy on the LVGL task (it owns the expander
+I2C bus, so PWM writes must live there): dim to 15% after 10 minutes without
+input, cut the backlight (EXIO2 low) after 30 minutes. Stage thresholds and
+the dim level are Kconfig knobs (`PADEL_COURT_IDLE_DIM_MIN`,
+`PADEL_COURT_IDLE_DIM_PERCENT`, `PADEL_COURT_IDLE_OFF_MIN`); zeroing the dim
+minutes or percent disables the feature, zeroing the off minutes keeps the
+dim stage as the floor. The stage decision itself is portable and unit
+tested in `padel/common/idle_dim.hpp`.
+
+Idle time is the minimum of LVGL's own inactivity clock (touch) and an
+input timestamp stamped by the app task for the paths LVGL cannot see:
+remote point intents, pair requests, wired backup buttons and queued UI
+commands. Remote heartbeats and other unhandled traffic deliberately do not
+count, or the panel would never dim. A remote point both wakes the display
+and scores normally.
+
+While any idle stage is active the board profile gates touch: the press is
+reported to LVGL as released and only latches a wake flag, and the gate
+survives until the finger lifts, so the tap that restores brightness can
+never land on a team panel. This mirrors ADR-0015's rule that the press
+waking a sleeping remote never scores.
+
+The dim and off levels are applied brightness only. NVS keeps just the
+organizer's slider value, so a reboot from an idle state comes back at the
+chosen brightness, and moving the slider re-applies it immediately.
+
+Consequences: A dark court panel is now an expected state; diagnostics shows
+the stage and the configured windows, and the troubleshooting guide lists it
+before the hardware causes. Idle dimming applies on USB as well as battery -
+one behaviour to reason about, and it still saves a power bank. Cutting the
+backlight does not stop the RGB panel refresh, so the saving is the LED
+string only, not full display sleep.

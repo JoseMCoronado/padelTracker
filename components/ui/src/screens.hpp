@@ -90,6 +90,7 @@ struct LiveScreen {
     lv_obj_t* mode_label = nullptr;
     lv_obj_t* status_label = nullptr;
     lv_obj_t* radio_label = nullptr;
+    lv_obj_t* battery_label = nullptr;
     lv_obj_t* storage_label = nullptr;
 
     struct TeamPanel {
@@ -115,6 +116,8 @@ struct LiveScreen {
     // organizer overlay + dialogs
     lv_obj_t* menu_button = nullptr;
     lv_obj_t* organizer_overlay = nullptr;
+    lv_obj_t* brightness_slider = nullptr;
+    lv_obj_t* brightness_value_label = nullptr;
     lv_obj_t* pause_button_label = nullptr;
     lv_obj_t* undo_dialog = nullptr;   // created on demand
     lv_obj_t* reset_dialog1 = nullptr;

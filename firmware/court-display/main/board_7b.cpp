@@ -70,16 +70,29 @@ constexpr uint8_t kIoExtRegDirection = 0x02;
 constexpr uint8_t kIoExtRegOutput = 0x03;
 constexpr uint8_t kIoExtRegInput = 0x04;
 constexpr uint8_t kIoExtRegPwm = 0x05;
-// NOTE: do not write the PWM register (0x05). Waveshare's LCD demo never
-// touches it and the backlight runs steady at full brightness; writing it
-// engages the chip's slow PWM mode, which flickers visibly (observed on
-// hardware with duty 128 and 0 alike, until a full power cycle).
+constexpr uint8_t kIoExtRegAdc = 0x06;
+// Backlight PWM drives the AP3032 FB pin and is INVERTED: higher duty =
+// dimmer. Safe range 1–247 (248+ blanks). Usable dimming is roughly
+// duty 30 (full) … 240 (dim); 0–80 looks nearly identical at full.
+
+constexpr uint8_t kPwmDutyBright = 30;   // ~100% brightness
+constexpr uint8_t kPwmDutyDim = 240;     // ~minimum visible
+constexpr uint8_t kPwmDutyOff = 247;     // effectively off via PWM
 
 i2c_master_bus_handle_t s_i2c_bus = nullptr;
 i2c_master_dev_handle_t s_ioext = nullptr;
 uint8_t s_exio_state = 0;
+uint8_t s_brightness_percent = 100;
+bool s_touch_gated = false;
+bool s_touch_wake = false;
+// Set when a gated press was swallowed: the gate then survives set_touch_gate
+// (false) until the finger lifts, so the wake tap cannot become a real tap.
+bool s_touch_await_release = false;
 
 bool ioext_write(uint8_t reg, uint8_t value) {
+    if (s_ioext == nullptr) {
+        return false;
+    }
     const uint8_t frame[2] = {reg, value};
     esp_err_t err = ESP_FAIL;
     for (int attempt = 0; attempt < 3 && err != ESP_OK; ++attempt) {
@@ -94,11 +107,35 @@ bool ioext_write(uint8_t reg, uint8_t value) {
 }
 
 bool ioext_read(uint8_t reg, uint8_t* out) {
+    if (s_ioext == nullptr) {
+        return false;
+    }
     return i2c_master_transmit_receive(s_ioext, &reg, 1, out, 1, 100) == ESP_OK;
+}
+
+bool ioext_read_bytes(uint8_t reg, uint8_t* out, size_t len) {
+    if (s_ioext == nullptr || out == nullptr || len == 0) {
+        return false;
+    }
+    const esp_err_t err = i2c_master_transmit_receive(s_ioext, &reg, 1, out, len, 100);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    return err == ESP_OK;
 }
 
 bool exio_apply() {
     return ioext_write(kIoExtRegOutput, s_exio_state);
+}
+
+// Map UI percent → inverted PWM duty (100% → bright/low duty, 0% → dim/high).
+uint8_t percent_to_pwm_duty(uint8_t percent) {
+    if (percent >= 100) {
+        return kPwmDutyBright;
+    }
+    if (percent == 0) {
+        return kPwmDutyOff;
+    }
+    return static_cast<uint8_t>(
+        kPwmDutyDim - (static_cast<uint16_t>(percent) * (kPwmDutyDim - kPwmDutyBright)) / 100u);
 }
 
 // --- LVGL glue --------------------------------------------------------------
@@ -121,7 +158,17 @@ void touch_read_cb(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     uint16_t y = 0;
     uint8_t count = 0;
     const bool pressed = esp_lcd_touch_get_coordinates(s_touch, &x, &y, nullptr, &count, 1);
-    if (pressed && count > 0) {
+    const bool touching = pressed && count > 0;
+    if (s_touch_gated || s_touch_await_release) {
+        if (touching) {
+            s_touch_wake = true;
+            s_touch_await_release = true;
+            data->state = LV_INDEV_STATE_RELEASED;
+            return;
+        }
+        s_touch_await_release = false;
+    }
+    if (touching) {
         data->point.x = x;
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
@@ -350,6 +397,56 @@ void set_backlight(bool on) {
         s_exio_state &= static_cast<uint8_t>(~kExioBacklight);
     }
     exio_apply();
+}
+
+std::optional<std::uint16_t> read_battery_raw() {
+    uint8_t bytes[2] = {};
+    if (!ioext_read_bytes(kIoExtRegAdc, bytes, sizeof(bytes))) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint16_t>(bytes[0] | (static_cast<std::uint16_t>(bytes[1]) << 8));
+}
+
+std::optional<std::uint16_t> read_battery_mv() {
+    const auto raw = read_battery_raw();
+    if (!raw) {
+        return std::nullopt;
+    }
+    // 10-bit ADC, 3.3 V reference, onboard 3:1 divider → scale by 9.9 V.
+    return static_cast<std::uint16_t>((static_cast<std::uint32_t>(*raw) * 9900u) / 1023u);
+}
+
+void set_brightness(std::uint8_t percent) {
+    if (percent > 100) {
+        percent = 100;
+    }
+    s_brightness_percent = percent;
+    if (s_brightness_percent == 0) {
+        // Prefer EXIO2 off; also park PWM at the safe "off" duty.
+        set_backlight(false);
+        ioext_write(kIoExtRegPwm, kPwmDutyOff);
+        return;
+    }
+    set_backlight(true);
+    // Inverted: 100% → duty ~30 (bright), 10% → duty ~219 (dim). Writing
+    // duty 247 for "full" was the blank-screen bug — that is minimum light.
+    if (!ioext_write(kIoExtRegPwm, percent_to_pwm_duty(s_brightness_percent))) {
+        ESP_LOGW(TAG, "brightness PWM write failed (percent=%u)", s_brightness_percent);
+    }
+}
+
+std::uint8_t brightness_percent() {
+    return s_brightness_percent;
+}
+
+void set_touch_gate(bool gated) {
+    s_touch_gated = gated;
+}
+
+bool consume_touch_wake() {
+    const bool woke = s_touch_wake;
+    s_touch_wake = false;
+    return woke;
 }
 
 }  // namespace board

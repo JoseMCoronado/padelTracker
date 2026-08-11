@@ -23,7 +23,9 @@ target_include_directories(domain_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 catch_discover_tests(domain_tests)
 
 add_executable(common_tests
-    common/test_log.cpp)
+    common/test_log.cpp
+    common/test_battery.cpp
+    common/test_idle_dim.cpp)
 target_link_libraries(common_tests PRIVATE padel_common Catch2::Catch2WithMain)
 catch_discover_tests(common_tests)
 

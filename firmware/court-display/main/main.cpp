@@ -12,7 +12,10 @@
 // All logic is the same natively tested code that runs in court-sim; this
 // file is transport + task glue.
 
+#include <algorithm>
+#include <atomic>
 #include <cinttypes>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -38,11 +41,14 @@
 #include "board_7b.hpp"
 #include "buzzer.hpp"
 #include "lvgl.h"
+#include "nvs.h"
 #include "padel/application/club_controller.hpp"
 #include "padel/application/court_service.hpp"
 #include "padel/application/pairing.hpp"
 #include "padel/application/roster.hpp"
 #include "padel/application/roster_file.hpp"
+#include "padel/common/battery.hpp"
+#include "padel/common/idle_dim.hpp"
 #include "padel/common/log.hpp"
 #include "padel/domain/club_round.hpp"
 #include "padel/persistence/journal.hpp"
@@ -216,6 +222,7 @@ struct AppCommand {
         ClubNextSet,
         ClubNewRound,
         ClubDone,
+        SetBrightness,
     };
     Type type{};
     TeamId team{TeamId::A};
@@ -225,6 +232,7 @@ struct AppCommand {
     bool resume = false;
     std::string player_name{};
     std::array<ui::ClubPlayer, 4> club_players{};
+    std::uint8_t brightness = 100;
 };
 
 std::mutex s_command_mutex;
@@ -245,6 +253,89 @@ void publish_model(const ui::UiModel& model) {
     std::lock_guard<std::mutex> lock(s_model_mutex);
     s_shared_model = model;
     s_model_dirty = true;
+}
+
+constexpr char kBrightnessNvsKey[] = "bright";
+
+// --- Idle backlight (ADR-0020) ----------------------------------------------
+
+constexpr power::IdlePolicy kIdlePolicy{
+    static_cast<std::uint32_t>(CONFIG_PADEL_COURT_IDLE_DIM_MIN) * 60u * 1000u,
+    static_cast<std::uint32_t>(CONFIG_PADEL_COURT_IDLE_OFF_MIN) * 60u * 1000u,
+    static_cast<std::uint8_t>(CONFIG_PADEL_COURT_IDLE_DIM_PERCENT),
+};
+
+// Input clock shared app task -> LVGL task. Touch is already covered by LVGL's
+// own inactivity timer, so this only carries the paths LVGL cannot see:
+// remote points, pair requests, wired buttons and queued UI commands.
+std::atomic<std::uint64_t> s_last_input_ms{0};
+// Organizer brightness (slider / NVS); the awake level the idle stages ride on.
+std::atomic<std::uint8_t> s_user_brightness{100};
+std::atomic<std::uint8_t> s_display_stage{
+    static_cast<std::uint8_t>(power::DisplayStage::Awake)};
+
+void note_input() {
+    s_last_input_ms.store(static_cast<std::uint64_t>(esp_timer_get_time() / 1000),
+                          std::memory_order_relaxed);
+}
+
+// Diagnostics text: current stage plus the configured idle windows.
+std::string display_state_label() {
+    const auto stage =
+        static_cast<power::DisplayStage>(s_display_stage.load(std::memory_order_relaxed));
+    std::string label = power::stage_label(stage);
+    if (stage == power::DisplayStage::Dimmed) {
+        label += " " + std::to_string(kIdlePolicy.dim_percent) + "%";
+    }
+    if (kIdlePolicy.dim_percent == 0 || kIdlePolicy.dim_after_ms == 0) {
+        return label + " (idle dim disabled)";
+    }
+    label += " (dim " + std::to_string(CONFIG_PADEL_COURT_IDLE_DIM_MIN) + "m";
+    if (kIdlePolicy.off_after_ms != 0) {
+        label += ", off " + std::to_string(CONFIG_PADEL_COURT_IDLE_OFF_MIN) + "m";
+    }
+    return label + ")";
+}
+
+std::mutex s_battery_mutex;
+std::optional<std::uint16_t> s_battery_mv;
+
+std::optional<std::uint16_t> latest_battery_mv() {
+    std::lock_guard<std::mutex> lock(s_battery_mutex);
+    return s_battery_mv;
+}
+
+void publish_battery_mv(std::optional<std::uint16_t> mv) {
+    std::lock_guard<std::mutex> lock(s_battery_mutex);
+    s_battery_mv = mv;
+}
+
+std::uint8_t load_brightness_nvs() {
+    nvs_handle_t handle = 0;
+    std::uint8_t value = 100;
+    if (nvs_open("padel_court", NVS_READONLY, &handle) != ESP_OK) {
+        return value;
+    }
+    nvs_get_u8(handle, kBrightnessNvsKey, &value);
+    nvs_close(handle);
+    if (value < 10) {
+        value = 10;
+    }
+    if (value > 100) {
+        value = 100;
+    }
+    return value;
+}
+
+void save_brightness_nvs(std::uint8_t percent) {
+    nvs_handle_t handle = 0;
+    if (nvs_open("padel_court", NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    if (nvs_set_u8(handle, kBrightnessNvsKey, percent) == ESP_OK) {
+        nvs_commit(handle);
+    }
+    nvs_close(handle);
 }
 
 // --- Application ------------------------------------------------------------
@@ -289,6 +380,9 @@ struct CourtApp {
     std::uint32_t acked_remote_undos = 0;
     domain::MatchLifecycle prev_lifecycle = domain::MatchLifecycle::NotStarted;
     bool storage_degraded = false;
+
+    std::uint8_t brightness_percent = 100;
+    std::optional<std::uint16_t> battery_mv{};
 
     void create_pairing_service() {
         pairing = std::make_unique<application::PairingService>(
@@ -450,6 +544,7 @@ struct CourtApp {
             const auto intent =
                 protocol::parse_point_intent(frame.data, static_cast<size_t>(frame.len));
             if (intent) {
+                note_input();
                 remember_mac(intent.value().identity.remote_id, frame.mac);
                 service->handle_point_intent(intent.value());
             }
@@ -457,6 +552,7 @@ struct CourtApp {
             const auto request =
                 protocol::parse_pair_request(frame.data, static_cast<size_t>(frame.len));
             if (request) {
+                note_input();
                 remember_mac(request.value().remote_id, frame.mac);
                 pairing->handle_pair_request(request.value());
             }
@@ -494,6 +590,7 @@ struct CourtApp {
     // --- UI commands ---------------------------------------------------------
     void handle_command(const AppCommand& command) {
         using Type = AppCommand::Type;
+        note_input();
         switch (command.type) {
             case Type::AwardPoint:
                 service->award_point_local(command.team, InputSource::TouchscreenAdmin);
@@ -575,6 +672,12 @@ struct CourtApp {
             case Type::TestBeep:
                 buzzer::play(sound::Cue::SelfTest);
                 break;
+            case Type::SetBrightness:
+                // Only the organizer's own level is persisted; idle stages never
+                // reach NVS, so a reboot comes up at the chosen brightness.
+                brightness_percent = command.brightness;
+                save_brightness_nvs(brightness_percent);
+                break;
             case Type::CreatePlayer:
                 roster->add_player(command.player_name);
                 break;
@@ -642,9 +745,27 @@ struct CourtApp {
         const auto& counters = service->counters();
         const auto& dedup = service->deduplicator().counters();
         rows.push_back({"Firmware", "court-display esp32s3"});
-        rows.push_back({"Board profile", "Waveshare 7B 1024x600 (UNVERIFIED)"});
+        rows.push_back({"Board profile", "Waveshare 7B 1024x600"});
         rows.push_back({"Court id", std::to_string(kCourtId)});
         rows.push_back({"Radio channel", std::to_string(CONFIG_PADEL_COURT_WIFI_CHANNEL)});
+        const auto soc = battery_mv ? padel::battery::mv_to_percent(*battery_mv) : std::nullopt;
+        if (soc) {
+            rows.push_back({"Battery", std::to_string(*soc) + "%"});
+        } else {
+            rows.push_back({"Battery", "unknown / no cell"});
+        }
+        if (battery_mv) {
+            char volt[16];
+            std::snprintf(volt, sizeof(volt), "%u.%02u V", *battery_mv / 1000u,
+                          (*battery_mv % 1000u) / 10u);
+            rows.push_back({"Battery voltage", volt});
+        } else {
+            rows.push_back({"Battery voltage", "n/a"});
+        }
+        rows.push_back(
+            {"Est. runtime", padel::battery::format_runtime_estimate(soc)});
+        rows.push_back({"Brightness", std::to_string(brightness_percent) + "%"});
+        rows.push_back({"Display", display_state_label()});
         rows.push_back({"Buzzer (GPIO" + std::to_string(CONFIG_PADEL_COURT_BUZZER_GPIO) + ")",
                         buzzer::kind()});
         rows.push_back({wired_button_label('A', CONFIG_PADEL_COURT_BUTTON_A_GPIO),
@@ -674,11 +795,16 @@ struct CourtApp {
         pairing->tick();
         send_acks();
 
+        // ADC is sampled on the LVGL task (shared I2C with touch).
+        battery_mv = latest_battery_mv();
+
         // Wired backup buttons participate in the conflict guard (spec 15).
         if (button_a.pressed_edge(now)) {
+            note_input();
             service->award_point_local(TeamId::A, InputSource::PhysicalBackupButton);
         }
         if (button_b.pressed_edge(now)) {
+            note_input();
             service->award_point_local(TeamId::B, InputSource::PhysicalBackupButton);
         }
 
@@ -742,6 +868,12 @@ struct CourtApp {
 
         model.settings = settings;
         model.live = ui::build_live_model(*service, settings, now);
+        model.live.brightness_percent = brightness_percent;
+        if (battery_mv) {
+            model.live.battery_percent = padel::battery::mv_to_percent(*battery_mv);
+        } else {
+            model.live.battery_percent = std::nullopt;
+        }
         if (now < flash_until_ms) {
             model.live.point_flash = flash_team;
         }
@@ -816,6 +948,15 @@ ui::UiCallbacks make_callbacks() {
         push_command({.type = AppCommand::Type::RecoveryChoice, .resume = resume});
     };
     cb.test_beep = []() { push_command({.type = AppCommand::Type::TestBeep}); };
+    // The idle manager owns the PWM write (same LVGL task, which also owns the
+    // I2C bus shared with touch); persist via the app task so NVS writes stay
+    // off the UI thread.
+    cb.set_brightness = [](std::uint8_t percent) {
+        s_user_brightness.store(percent, std::memory_order_relaxed);
+        AppCommand command{.type = AppCommand::Type::SetBrightness};
+        command.brightness = percent;
+        push_command(std::move(command));
+    };
     cb.create_player = [](const std::string& name) {
         AppCommand command{.type = AppCommand::Type::CreatePlayer};
         command.player_name = name;
@@ -843,6 +984,14 @@ void lvgl_task(void* /*arg*/) {
         vTaskDelete(nullptr);
         return;
     }
+    const std::uint8_t restored = load_brightness_nvs();
+    s_user_brightness.store(restored, std::memory_order_relaxed);
+    board::set_brightness(restored);
+    {
+        AppCommand command{.type = AppCommand::Type::SetBrightness};
+        command.brightness = restored;
+        push_command(std::move(command));
+    }
     ui::init_theme();
 
     static ui::CourtUi court_ui;
@@ -850,10 +999,40 @@ void lvgl_task(void* /*arg*/) {
 
     ui::UiModel local_model;
     std::uint64_t last_render_ms = 0;
+    std::uint64_t last_battery_sample_ms = 0;
+    std::uint8_t applied_brightness = restored;
+    std::uint64_t touch_wake_ms = 0;
     while (true) {
         lv_timer_handler();
 
         const std::uint64_t now = static_cast<std::uint64_t>(esp_timer_get_time() / 1000);
+        if (last_battery_sample_ms == 0 || now - last_battery_sample_ms >= 5000) {
+            publish_battery_mv(board::read_battery_mv());
+            last_battery_sample_ms = now;
+        }
+
+        // Idle backlight stages (ADR-0020). Touch comes from LVGL's own
+        // inactivity clock, except for the gated tap that ends a dim: that one
+        // never reaches LVGL, so it reports through the board wake latch.
+        if (board::consume_touch_wake()) {
+            touch_wake_ms = now;
+        }
+        const std::uint64_t last_input =
+            std::max(s_last_input_ms.load(std::memory_order_relaxed), touch_wake_ms);
+        const std::uint32_t idle_ms =
+            std::min(static_cast<std::uint32_t>(now - last_input),
+                     static_cast<std::uint32_t>(lv_disp_get_inactive_time(nullptr)));
+        const auto stage = power::stage_for_idle(idle_ms, kIdlePolicy);
+        const std::uint8_t target = power::applied_percent(
+            stage, s_user_brightness.load(std::memory_order_relaxed), kIdlePolicy);
+        if (target != applied_brightness) {
+            board::set_brightness(target);
+            applied_brightness = target;
+            ESP_LOGI(TAG, "display %s: backlight %u%%", power::stage_label(stage), target);
+        }
+        board::set_touch_gate(stage != power::DisplayStage::Awake);
+        s_display_stage.store(static_cast<std::uint8_t>(stage), std::memory_order_relaxed);
+
         bool render = false;
         {
             std::lock_guard<std::mutex> lock(s_model_mutex);

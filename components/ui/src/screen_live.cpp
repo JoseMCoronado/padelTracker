@@ -4,6 +4,8 @@
 #include "padel/ui/tokens.hpp"
 #include "screens.hpp"
 
+#include <cstdio>
+
 namespace padel::ui::internal {
 namespace {
 
@@ -155,6 +157,20 @@ void on_reset(lv_event_t* e) {
     s->open_reset_dialog(1);
 }
 
+void on_brightness(lv_event_t* e) {
+    LiveScreen* s = self(e);
+    lv_obj_t* slider = lv_event_get_target(e);
+    const auto percent = static_cast<std::uint8_t>(lv_slider_get_value(slider));
+    if (s->brightness_value_label != nullptr) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "%u%%", percent);
+        set_text(s->brightness_value_label, buf);
+    }
+    if (s->shared->callbacks.set_brightness) {
+        s->shared->callbacks.set_brightness(percent);
+    }
+}
+
 void on_conflict_a(lv_event_t* e) {
     if (self(e)->shared->callbacks.resolve_conflict)
         self(e)->shared->callbacks.resolve_conflict(TeamId::A);
@@ -215,6 +231,8 @@ void LiveScreen::create(Shared* shared_state) {
     storage_label = make_label(header, tokens::font_body(), tokens::error());
     lv_label_set_text(storage_label, LV_SYMBOL_WARNING " STORAGE");
     lv_obj_add_flag(storage_label, LV_OBJ_FLAG_HIDDEN);
+    battery_label = make_label(header, tokens::font_body(), tokens::text_muted());
+    lv_label_set_text(battery_label, "BAT --");
     radio_label = make_label(header, tokens::font_body(), tokens::success());
 
     // --- Conflict banner (hidden unless a conflict is pending). Floating
@@ -317,11 +335,54 @@ void LiveScreen::create(Shared* shared_state) {
     lv_obj_set_style_pad_row(card, tokens::kSpaceS, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_obj_t* title = make_label(card, tokens::font_body(), tokens::text_muted());
     lv_label_set_text(title, "ORGANIZER");
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_set_style_pad_bottom(title, tokens::kSpaceXs, 0);
+
+    // Brightness at the top so organizers can dim mid-match without leaving Live.
+    lv_obj_t* bright_row = lv_obj_create(card);
+    lv_obj_set_size(bright_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(bright_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bright_row, 0, 0);
+    // Inset so the slider knob is not clipped at 0%/100% by the card edge.
+    lv_obj_set_style_pad_ver(bright_row, tokens::kSpaceXs, 0);
+    lv_obj_set_style_pad_hor(bright_row, tokens::kSpaceM, 0);
+    lv_obj_set_style_pad_row(bright_row, tokens::kSpaceXs, 0);
+    lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(bright_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(bright_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(bright_row, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+    lv_obj_t* bright_header = lv_obj_create(bright_row);
+    lv_obj_set_size(bright_header, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(bright_header, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bright_header, 0, 0);
+    lv_obj_set_style_pad_all(bright_header, 0, 0);
+    lv_obj_set_flex_flow(bright_header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bright_header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(bright_header, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* bright_title = make_label(bright_header, tokens::font_body(), tokens::text());
+    lv_label_set_text(bright_title, LV_SYMBOL_SETTINGS " BRIGHTNESS");
+    brightness_value_label = make_label(bright_header, tokens::font_body(), tokens::text_muted());
+    lv_label_set_text(brightness_value_label, "100%");
+
+    brightness_slider = lv_slider_create(bright_row);
+    lv_obj_set_width(brightness_slider, LV_PCT(100));
+    lv_obj_set_height(brightness_slider, 22);
+    lv_slider_set_range(brightness_slider, 10, 100);
+    lv_slider_set_value(brightness_slider, 100, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(brightness_slider, tokens::surface_raised(), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(brightness_slider, tokens::team_a(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(brightness_slider, tokens::text(), LV_PART_KNOB);
+    lv_obj_set_style_width(brightness_slider, 18, LV_PART_KNOB);
+    lv_obj_set_style_height(brightness_slider, 18, LV_PART_KNOB);
+    lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_add_event_cb(brightness_slider, on_brightness, LV_EVENT_VALUE_CHANGED, this);
 
     // Menu rows read as a list: icon and text left-aligned on a common margin
     // rather than centered per row.
@@ -414,6 +475,35 @@ void LiveScreen::update(const LiveViewModel& m) {
 
     set_text(radio_label, m.radio_ok ? "RADIO: OK" : "RADIO: CHECK");
     lv_obj_set_style_text_color(radio_label, m.radio_ok ? tokens::success() : tokens::warning(), 0);
+
+    if (m.battery_percent) {
+        if (*m.battery_percent <= 15) {
+            set_text(battery_label, "BAT LOW");
+            lv_obj_set_style_text_color(battery_label, tokens::warning(), 0);
+        } else {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "BAT %u%%", *m.battery_percent);
+            set_text(battery_label, buf);
+            lv_obj_set_style_text_color(battery_label, tokens::success(), 0);
+        }
+    } else {
+        set_text(battery_label, "BAT --");
+        lv_obj_set_style_text_color(battery_label, tokens::text_muted(), 0);
+    }
+
+    if (brightness_slider != nullptr &&
+        !lv_obj_has_state(brightness_slider, LV_STATE_PRESSED)) {
+        const auto value = static_cast<std::uint8_t>(
+            m.brightness_percent < 10 ? 10 : m.brightness_percent);
+        if (lv_slider_get_value(brightness_slider) != value) {
+            lv_slider_set_value(brightness_slider, value, LV_ANIM_OFF);
+        }
+        if (brightness_value_label != nullptr) {
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "%u%%", value);
+            set_text(brightness_value_label, buf);
+        }
+    }
 
     if (m.storage_fault) {
         lv_obj_clear_flag(storage_label, LV_OBJ_FLAG_HIDDEN);

@@ -32,6 +32,8 @@ struct UiCallbacks {
     std::function<void(TeamId)> unpair_remote;
     std::function<void(bool resume)> recovery_choice;      // resume vs discard
     std::function<void()> test_beep;                       // diagnostics buzzer test
+    // Court backlight 0–100 (Live ORGANIZER menu uses 10–100).
+    std::function<void(std::uint8_t percent)> set_brightness;
 
     // --- Club round ---------------------------------------------------------
     // NEW PLAYER in the picker; host persists to the roster and republishes.

@@ -93,6 +93,10 @@ struct LiveViewModel {
     bool storage_fault = false;
     bool conflict = false;       // BOTH TEAMS PRESSED banner
     bool paused = false;
+    // Court Li-ion SoC from the Waveshare ADC; empty when no cell / unknown.
+    std::optional<std::uint8_t> battery_percent{};
+    // Last applied backlight brightness (ORGANIZER menu slider, 10–100).
+    std::uint8_t brightness_percent = 100;
     // Set for one refresh after a point lands: pulse that panel + "+1".
     std::optional<TeamId> point_flash{};
     std::optional<TeamId> undo_preview{};  // team of the point an undo would remove

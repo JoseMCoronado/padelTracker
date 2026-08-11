@@ -31,6 +31,32 @@ config PADEL_COURT_BUZZER_PASSIVE
         by rhythm, which is the fallback if the passive one is too quiet in
         the hall.
 
+config PADEL_COURT_IDLE_DIM_MIN
+    int "Idle minutes before the backlight dims"
+    range 0 240
+    default 10
+    help
+        Minutes without any input (touch, wired button, remote point or pair
+        request) before the panel drops to the dim level below. 0 disables
+        idle dimming entirely.
+
+config PADEL_COURT_IDLE_DIM_PERCENT
+    int "Idle dim backlight percent"
+    range 0 100
+    default 15
+    help
+        Backlight level held while idle. Never brighter than the organizer's
+        own brightness setting. 0 disables idle dimming entirely.
+
+config PADEL_COURT_IDLE_OFF_MIN
+    int "Idle minutes before the backlight turns off"
+    range 0 720
+    default 30
+    help
+        Second stage: minutes of idle time before the backlight is cut
+        completely (EXIO2 low). 0 keeps the panel at the dim level forever.
+        The first touch afterwards only wakes the display; it never scores.
+
 config PADEL_COURT_BUTTON_A_GPIO
     int "Wired backup button GPIO (Team A)"
     default 13

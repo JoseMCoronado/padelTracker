@@ -39,9 +39,8 @@ VSYNC pulse/back/front 45/13/3. Frame buffer in PSRAM, bounce buffer
 Despite older Waveshare boards using a CH422G, the 7B's "IO EXTENSION" is a
 CH32V003 microcontroller at I2C address 0x24 with a normal register protocol:
 0x02 direction (1 = output), 0x03 output levels, 0x04 input readback,
-0x05 backlight PWM (leave untouched: any write engages a slow PWM mode that
-flickers visibly; unwritten, the backlight runs steady at full brightness,
-which is also what Waveshare's LCD demo does), 0x06 ADC.
+0x05 backlight PWM (**inverted**: higher duty = dimmer; usable ~30 full …
+240 dim, never ≥ 248), 0x06 ADC (battery voltage via onboard 3:1 divider).
 
 | Line | Function |
 |---|---|
@@ -52,9 +51,27 @@ which is also what Waveshare's LCD demo does), 0x06 ADC.
 | EXIO5 | USB/CAN select (keep low = USB) |
 | EXIO6 | LCD_VDD_EN (panel VCOM power) |
 
-Quirks learned on hardware: the backlight PWM duty register is volatile, so a
-cold boot stays dark until it is written — even with DISP high. The MCU
-firmware also wants a short pause (~2 ms) between I2C transactions.
+Quirks learned on hardware: the MCU firmware wants a short pause (~2 ms)
+between I2C transactions. Backlight PWM polarity is inverted (AP3032 FB):
+writing duty 247 for "100%" blanks the panel — that duty is minimum light.
+The ORGANIZER slider maps 10–100% onto duty ~219–30 and persists the percent
+in NVS. Unwritten `0x05` is also full brightness (Waveshare demo behaviour).
+
+### Court Li-ion (PH2.0)
+
+The 7B has an onboard CS8501 charge/boost and a PH2.0 battery header for a
+single-cell 3.7 V Li-ion. P0 cell: **CITYORK 3.7 V 2000 mAh 103450**. Verify
+connector polarity before first connect — do not assume all PH/JST-style
+connectors share the same polarity.
+
+Battery voltage is read from expander register `0x06` (10-bit LE). Millivolts:
+
+`mv = raw * 9900 / 1023` (3.3 V reference × 3:1 divider).
+
+SoC is a piecewise OCV curve in `padel/common/battery.hpp`; estimated runtime
+uses rated capacity × SoC / an assumed ~475 mA cell draw (from the board’s
+5 V / 350 mA figure through boost). Readings below ~2.5 V are treated as
+no cell / unknown.
 
 ### Project peripherals (chosen by us, `menuconfig` -> "Padel Court")
 

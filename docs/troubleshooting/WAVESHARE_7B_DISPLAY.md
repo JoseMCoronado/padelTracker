@@ -13,7 +13,8 @@ register protocol are documented in `docs/HARDWARE_PINOUT.md`.
 |---|---|---|
 | Black screen on cold boot (worked before unplugging) | Code drove a CH422G that isn't on this board; the real chip (CH32V003) was never commanded, and its volatile state was lost on power-off | Rewrote expander driver for the CH32V003 register protocol at I2C `0x24` |
 | Backlight glows but no image ("light towards the center") | EXIO3 is the panel's LCD_RST — it is missing from the wiki pin table, and driving it low holds the panel in reset | Drive EXIO3 high after panel power comes up |
-| Whole screen flickers heavily | Writing the expander's PWM register (`0x05`) engages a slow PWM backlight mode | Never write register `0x05`; backlight then runs steady at full brightness |
+| Whole screen blanks after enabling brightness | PWM polarity is inverted; mapping 100% → duty 247 is minimum light | Map 100% → duty ~30, dim → ~240; never write ≥ 248 |
+| Panel dim or dark but firmware is clearly alive | Expected: the idle backlight stages (ADR-0020) dim after 10 min and cut the backlight after 30 min | Touch the panel — the first tap only wakes it. Check the Diagnostics "Display" row before suspecting hardware |
 | Faint whole-panel shimmer | 16 MHz pixel clock = ~17 Hz panel refresh, slow enough for LCD inversion flicker | 30 MHz pixel clock (what Waveshare's demo uses) = ~33 Hz refresh |
 | Touch "ABSENT" (`invalid scl frequency`) | `esp_lcd_panel_io_i2c_config_t.scl_speed_hz` left at 0 | Set it to 100 kHz |
 
@@ -31,7 +32,7 @@ The two chips have completely incompatible protocols:
   - `0x02` direction (1 = output) — write `0xFF` at init
   - `0x03` output levels
   - `0x04` input readback (reads actual pin levels — use to verify writes)
-  - `0x05` backlight PWM — **do not write, see below**
+  - `0x05` backlight PWM — inverted (higher = dimmer); usable ~30–240
   - `0x06` ADC (2 bytes, little endian)
 
 Why the bug was invisible at first: the CH422G-style code happened to write
@@ -67,18 +68,41 @@ Bring-up order that works: panel VDD + backlight enable + SD deselect first
 (LCD_RST and TP_RST still low) → 10 ms → release LCD_RST → 100 ms → drive
 GT911 INT low, release TP_RST, 50 ms, hand INT back to the driver → 200 ms.
 
-## Never write the backlight PWM register (0x05)
+## Backlight PWM register (0x05)
 
-Waveshare's own LCD demo never touches it, and neither should we:
+PWM is supported and **inverted** (higher duty → dimmer) because the CH32V003
+pulls the AP3032 boost FB pin low:
 
-- Unwritten, the backlight runs steady at full brightness.
-- Any write engages the chip's PWM mode, whose frequency is low enough to
-  flicker visibly. On our hardware this happened with duty 128 **and** 0.
-- The mode appears to persist until a full power cycle, so a reflash alone
-  won't clear it — unplug completely.
-- If dimming is ever genuinely needed: Waveshare's `IO_EXTENSION_Pwm_Output`
-  clamps at 97% because values ≥ ~248 turn the screen off entirely. Expect
-  flicker as the price of dimming.
+| Duty | Brightness |
+|---|---|
+| unwritten / ~0–30 | full / near-full |
+| ~80–240 | visible dimming |
+| 247 | effectively off |
+| ≥ 248 | unsafe — can blank the panel |
+
+The first brightness implementation mapped 100% → duty 247 and blanked the
+screen. Firmware now maps 100% → duty 30 and 10% → ~219. The ORGANIZER slider
+persists the percent in NVS (`padel_court` / `bright`).
+
+If the panel is stuck blank after a bad duty write, **unplug completely**
+(USB + battery); a soft reset may not clear expander PWM state.
+
+## A dim or dark panel is usually the idle policy, not a fault
+
+Before chasing the causes above, rule out the idle backlight stages
+(ADR-0020): 10 minutes without input drops the panel to 15%, 30 minutes cuts
+the backlight (EXIO2 low). "Input" means touch, a wired backup button, a
+remote point or a pair request — remote heartbeats do not keep it awake.
+
+- Touch anywhere to restore the organizer's brightness. **The waking tap is
+  swallowed on purpose**, so it never scores; tap again to actually score.
+- The Diagnostics "Display" row shows the current stage and the configured
+  windows, e.g. `dimmed 15% (dim 10m, off 30m)`.
+- To test quickly, or to turn the feature off, use `idf.py menuconfig` →
+  Padel Court → idle dim minutes / percent / off minutes. Setting the dim
+  minutes or dim percent to 0 disables idle dimming entirely.
+- Touch remains alive with the backlight off: DISP is EXIO2 while the GT911
+  hangs off EXIO1 (TP_RST) and I2C, so the wake tap always registers.
 
 ## Pixel clock must be 30 MHz
 

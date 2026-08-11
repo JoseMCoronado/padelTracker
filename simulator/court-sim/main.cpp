@@ -30,6 +30,7 @@
 #include "padel/application/court_service.hpp"
 #include "padel/application/roster.hpp"
 #include "padel/application/roster_file.hpp"
+#include "padel/common/battery.hpp"
 #include "padel/common/log.hpp"
 #include "padel/application/pairing.hpp"
 #include "padel/domain/club_round.hpp"
@@ -179,6 +180,10 @@ struct App {
     domain::MatchLifecycle prev_lifecycle = domain::MatchLifecycle::NotStarted;
     std::uint32_t acked_remote_undos = 0;
     std::vector<std::string> log_lines;
+
+    // Simulated court Li-ion (CITYORK 2000 mAh on the Waveshare PH2.0).
+    std::uint16_t battery_mv = 3900;
+    std::uint8_t brightness_percent = 100;
 
     void log(const std::string& line) {
         std::printf("[sim] %s\n", line.c_str());
@@ -541,6 +546,10 @@ struct App {
             }
         };
         cb.test_beep = [this]() { play_cue(sound::Cue::SelfTest); };
+        cb.set_brightness = [this](std::uint8_t percent) {
+            brightness_percent = percent;
+            log("brightness " + std::to_string(percent) + "%");
+        };
 
         // --- Club round -----------------------------------------------------
         cb.create_player = [this](const std::string& name) {
@@ -673,6 +682,20 @@ struct App {
         rows.push_back({"Board profile", "SDL 1024x600"});
         rows.push_back({"Court id", std::to_string(kCourtId)});
         rows.push_back({"Radio channel", "n/a (simulated)"});
+        const auto soc = padel::battery::mv_to_percent(battery_mv);
+        if (soc) {
+            rows.push_back({"Battery", std::to_string(*soc) + "%"});
+        } else {
+            rows.push_back({"Battery", "unknown / no cell"});
+        }
+        {
+            char volt[16];
+            std::snprintf(volt, sizeof(volt), "%u.%02u V", battery_mv / 1000u,
+                          (battery_mv % 1000u) / 10u);
+            rows.push_back({"Battery voltage", volt});
+        }
+        rows.push_back({"Est. runtime", padel::battery::format_runtime_estimate(soc)});
+        rows.push_back({"Brightness", std::to_string(brightness_percent) + "%"});
         remote_row(remote_a, "Remote 0xA1");
         remote_row(remote_b, "Remote 0xB1");
         rows.push_back({"Induced loss", std::to_string(loss_pct) + "%"});
@@ -790,6 +813,8 @@ struct App {
         // Assemble the frame model.
         model.settings = settings;
         model.live = ui::build_live_model(*service, settings, now);
+        model.live.brightness_percent = brightness_percent;
+        model.live.battery_percent = padel::battery::mv_to_percent(battery_mv);
         if (now < flash_until_ms) {
             model.live.point_flash = flash_team;
         }
