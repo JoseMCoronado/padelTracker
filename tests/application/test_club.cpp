@@ -195,6 +195,39 @@ TEST_CASE("full round: labels, mix, standings, results log") {
     CHECK(log.rows[3].wins == 0);
 }
 
+TEST_CASE("recorded sets keep the names that played them") {
+    MemoryRosterStore store;
+    MemoryResultsLog log;
+    FakeClock clock;
+    PlayerRoster roster(store);
+    ClubController controller(log, clock);
+
+    REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
+    CHECK(controller.recorded_sets().empty());
+
+    controller.on_set_complete(completed_set(TeamId::B, 1));  // LOUIS & LUIGI 3-1
+    auto played = controller.recorded_sets();
+    REQUIRE(played.size() == 1);
+    CHECK(played[0].team_a == "ADRIEN & LEWIS");
+    CHECK(played[0].team_b == "LOUIS & LUIGI");
+    CHECK(played[0].games_a == 1);
+    CHECK(played[0].games_b == 3);
+    CHECK(played[0].winner == TeamId::B);
+
+    // The mix swaps partners, so set 2 reads back with its own pairing.
+    controller.on_set_complete(completed_set(TeamId::A, 2));
+    played = controller.recorded_sets();
+    REQUIRE(played.size() == 2);
+    CHECK(played[0].team_a == "ADRIEN & LEWIS");
+    CHECK(played[1].team_a == "LOUIS & ADRIEN");
+    CHECK(played[1].team_b == "LUIGI & LEWIS");
+    CHECK(played[1].games_a == 3);
+    CHECK(played[1].games_b == 2);
+
+    REQUIRE(controller.undo_last_set());
+    CHECK(controller.recorded_sets().size() == 1);
+}
+
 TEST_CASE("an undo reopens set 2 and the results log is still written once") {
     MemoryRosterStore store;
     MemoryResultsLog log;

@@ -34,6 +34,17 @@ SummaryViewModel build_summary_model(const application::CourtService& service,
 // Human label for the scoring mode of a config ("STANDARD / ADV", ...).
 std::string mode_label(const domain::MatchConfig& config);
 
+// "Jose & Ruxandra" -> "JOS/RUX". The scoreboard is read from the far side of
+// a court, so a pair label is cut to three capitals a side. A label that is
+// not a pair (a club or team name) is left alone rather than mangled.
+std::string scoreboard_short_name(const std::string& label);
+
+// Scoreboard blocks for the club mini-sets finished before the one on screen
+// (displayed_set_number is 1 or 2). Each keeps the pairing that played it,
+// because the mix swaps partners between sets.
+std::vector<ScoreboardModel> build_club_prior_boards(
+    const application::ClubController& controller, int displayed_set_number);
+
 // Club view model: roster tiles for the picker plus, when a round is
 // active, the mix pairing / standings projected from the controller.
 // setup_hint carries a validation message (e.g. forbidden pair), or "".

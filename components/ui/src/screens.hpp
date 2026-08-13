@@ -76,6 +76,21 @@ struct ScoreboardWidget {
     Row row_b{};
 };
 
+// A club round plays two mini-sets with different partners, so the finished
+// set cannot become another column of the live board: it needs its own name
+// plates. The strip draws the sets already played first, left to right, then
+// the board for the set on screen. An ordinary match is a single block.
+struct ScoreboardStrip {
+    static constexpr int kMaxBlocks = 2;  // a club round is two mini-sets
+
+    void create(lv_obj_t* parent, lv_coord_t row_height, const lv_font_t* name_font,
+                const lv_font_t* digit_font);
+    void update(const ScoreboardModel& current, const PriorScoreboards& prior);
+
+    lv_obj_t* root = nullptr;  // row of blocks
+    ScoreboardWidget blocks[kMaxBlocks]{};
+};
+
 // --- Screens ------------------------------------------------------------------
 
 struct LiveScreen {
@@ -105,7 +120,7 @@ struct LiveScreen {
     TeamPanel team_a{};
     TeamPanel team_b{};
 
-    ScoreboardWidget scoreboard{};
+    ScoreboardStrip scoreboard{};
     lv_obj_t* special_label = nullptr;  // DEUCE / GOLDEN POINT / TIEBREAK
 
     // conflict banner (spec 12.4)
@@ -231,7 +246,7 @@ struct SummaryScreen {
     lv_obj_t* root = nullptr;
     lv_obj_t* title_label = nullptr;
     lv_obj_t* winner_label = nullptr;
-    ScoreboardWidget scoreboard{};
+    ScoreboardStrip scoreboard{};
     struct StatRow {
         lv_obj_t* panel = nullptr;
         lv_obj_t* label = nullptr;

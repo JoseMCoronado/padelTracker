@@ -1,5 +1,6 @@
 #include "padel/ui/model_builder.hpp"
 
+#include <cctype>
 #include <cstdio>
 
 #include "padel/domain/projection.hpp"
@@ -30,12 +31,39 @@ std::string scoreboard_name(const MatchSettings& settings, TeamId team) {
                              team);
 }
 
+// One side of a pair label, cut to the three capitals a plate has room for.
+// Only the first word counts, so "Maximiliano Alejandro" reads MAX.
+std::string short_name_token(const std::string& name) {
+    std::string result;
+    for (const unsigned char c : name) {
+        if (std::isspace(c) != 0) {
+            if (!result.empty()) {
+                break;
+            }
+            continue;
+        }
+        result.push_back(static_cast<char>(std::toupper(c)));
+        if (result.size() == 3) {
+            break;
+        }
+    }
+    return result;
+}
+
+ScoreColumn set_column(std::uint8_t games_a, std::uint8_t games_b, TeamId winner) {
+    ScoreColumn column{};
+    column.games_a = std::to_string(static_cast<unsigned>(games_a));
+    column.games_b = std::to_string(static_cast<unsigned>(games_b));
+    column.won = winner;
+    return column;
+}
+
 ScoreboardModel build_scoreboard(const domain::DisplayState& display,
                                  const MatchSettings& settings,
                                  bool show_serving) {
     ScoreboardModel board{};
-    board.name_a = scoreboard_name(settings, TeamId::A);
-    board.name_b = scoreboard_name(settings, TeamId::B);
+    board.name_a = scoreboard_short_name(scoreboard_name(settings, TeamId::A));
+    board.name_b = scoreboard_short_name(scoreboard_name(settings, TeamId::B));
     if (show_serving) {
         board.serving = display.serving_team;
     }
@@ -101,6 +129,58 @@ std::string mode_label(const domain::MatchConfig& config) {
         label += " / MTB";
     }
     return label;
+}
+
+std::string scoreboard_short_name(const std::string& label) {
+    std::vector<std::string> sides;
+    std::string current;
+    for (const char c : label) {
+        if (c == '&' || c == '/') {
+            sides.push_back(current);
+            current.clear();
+        } else {
+            current.push_back(c);
+        }
+    }
+    sides.push_back(current);
+    if (sides.size() < 2) {
+        return label;  // a club or team name, not a pair
+    }
+
+    std::string result;
+    for (const std::string& side : sides) {
+        const std::string token = short_name_token(side);
+        if (token.empty()) {
+            return label;  // a stray separator, not a pair after all
+        }
+        if (!result.empty()) {
+            result += "/";
+        }
+        result += token;
+    }
+    return result;
+}
+
+std::vector<ScoreboardModel> build_club_prior_boards(
+    const application::ClubController& controller, int displayed_set_number) {
+    std::vector<ScoreboardModel> boards;
+    const std::vector<application::ClubController::SetScoreline> played =
+        controller.recorded_sets();
+    // The set on screen is drawn by the live board; everything before it gets
+    // a block of its own. Right after set 1 the round has already moved on to
+    // set 2, which is why the caller says which set is showing.
+    const std::size_t prior = displayed_set_number > 0
+                                  ? static_cast<std::size_t>(displayed_set_number - 1)
+                                  : 0;
+    for (std::size_t i = 0; i < prior && i < played.size(); ++i) {
+        ScoreboardModel board{};
+        board.name_a = scoreboard_short_name(played[i].team_a);
+        board.name_b = scoreboard_short_name(played[i].team_b);
+        board.columns.push_back(
+            set_column(played[i].games_a, played[i].games_b, played[i].winner));
+        boards.push_back(std::move(board));
+    }
+    return boards;
 }
 
 LiveViewModel build_live_model(const application::CourtService& service,

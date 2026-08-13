@@ -84,9 +84,11 @@ picked players become the team header on the scoring page; a custom team
 name keeps the players in small print underneath. For a club round set
 MODE to "Club round" — there the pick is required (2 per team) — then
 START CLUB ROUND. The round plays two first-to-3 mini-sets — after set 1 the
-mix screen announces the reshuffled teams, and after set 2 the standings
-screen shows Top 2 / Bottom 2 (ties broken by an announced automatic coin
-flip). Two players who arrive as a Top 2 can never be teammates: the previous
+mix screen announces the reshuffled teams, and during set 2 the footer carries
+both mini-sets side by side — set 1 with the partners who played it (JOS/RUX 3,
+WIL/ZOE 1) next to the set in progress (JOS/ZOE 2, WIL/RUX 2). After set 2 the
+standings screen shows Top 2 / Bottom 2 (ties broken by an announced automatic
+coin flip). Two players who arrive as a Top 2 can never be teammates: the previous
 round's pair is barred automatically, and double-tapping a name in the picker
 crowns it so the pair coming up from another court is barred too. Roster lives
 in `court-sim-data/roster.txt`; per-player results append to

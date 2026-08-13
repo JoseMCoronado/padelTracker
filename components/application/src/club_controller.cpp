@@ -115,6 +115,24 @@ ClubController::TeamLabels ClubController::current_set_teams() const {
     return TeamLabels{label_for(pairing.team_a), label_for(pairing.team_b)};
 }
 
+std::vector<ClubController::SetScoreline> ClubController::recorded_sets() const {
+    std::vector<SetScoreline> lines;
+    if (!round_) {
+        return lines;
+    }
+    for (int index = 0; index < round_->recorded_set_count(); ++index) {
+        const domain::ClubSetResult set = round_->set_result(index);
+        SetScoreline line{};
+        line.team_a = label_for(set.pairing.team_a);
+        line.team_b = label_for(set.pairing.team_b);
+        line.games_a = set.games_a;
+        line.games_b = set.games_b;
+        line.winner = set.winner;
+        lines.push_back(std::move(line));
+    }
+    return lines;
+}
+
 void ClubController::on_set_complete(const domain::MatchState& state) {
     if (!round_ || !state.winner || round_->stage() == domain::ClubStage::Complete) {
         return;

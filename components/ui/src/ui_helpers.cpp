@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstring>
 
 #include "padel/ui/tokens.hpp"
@@ -146,7 +147,9 @@ lv_obj_t* add_dialog_button(const Dialog& dialog, const char* text, lv_color_t c
 
 namespace {
 
-constexpr lv_coord_t kPlateWidth = 330;
+// Pair labels are cut to three capitals a side ("JOS/RUX"), which is what
+// lets two blocks of the strip share the footer with the MENU column.
+constexpr lv_coord_t kPlateWidth = 240;
 constexpr lv_coord_t kCellWidth = 76;
 constexpr lv_coord_t kServeDotSize = 16;
 
@@ -263,6 +266,40 @@ void ScoreboardWidget::create(lv_obj_t* parent, lv_coord_t row_height,
 void ScoreboardWidget::update(const ScoreboardModel& model) {
     update_scoreboard_row(row_a, model, TeamId::A);
     update_scoreboard_row(row_b, model, TeamId::B);
+}
+
+void ScoreboardStrip::create(lv_obj_t* parent, lv_coord_t row_height,
+                             const lv_font_t* name_font, const lv_font_t* digit_font) {
+    root = lv_obj_create(parent);
+    lv_obj_set_size(root, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
+    lv_obj_set_style_pad_column(root, tokens::kSpaceM, 0);
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(root, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (ScoreboardWidget& block : blocks) {
+        block.create(root, row_height, name_font, digit_font);
+        lv_obj_add_flag(block.root, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ScoreboardStrip::update(const ScoreboardModel& current, const PriorScoreboards& prior) {
+    // The board for the set on screen is always last, so it keeps its place on
+    // the right however many sets came before it.
+    const std::size_t shown = std::min<std::size_t>(prior.size(), kMaxBlocks - 1);
+    for (std::size_t i = 0; i < shown; ++i) {
+        lv_obj_clear_flag(blocks[i].root, LV_OBJ_FLAG_HIDDEN);
+        blocks[i].update(prior[i]);
+    }
+    lv_obj_clear_flag(blocks[shown].root, LV_OBJ_FLAG_HIDDEN);
+    blocks[shown].update(current);
+    for (std::size_t i = shown + 1; i < kMaxBlocks; ++i) {
+        lv_obj_add_flag(blocks[i].root, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 }  // namespace padel::ui::internal

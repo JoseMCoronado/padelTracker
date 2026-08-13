@@ -639,3 +639,47 @@ before the hardware causes. Idle dimming applies on USB as well as battery -
 one behaviour to reason about, and it still saves a power bank. Cutting the
 backlight does not stop the RGB panel refresh, so the saving is the LED
 string only, not full display sleep.
+
+## ADR-0021: Three capitals a side, and a club round shows both mini-sets
+
+Status: Accepted
+
+Context: Two complaints about the scoreboard of ADR-0017, both from people
+reading it from the far side of a court. The name plates print the pairing
+in full - "MAXIMILIANO / SEBASTIAN", "JOSE & RUXANDRA" - which at 28 px in
+a 330 px plate is either unreadable or ellipsized into nonsense. And a club
+round loses half of what it played: each mini-set is its own journaled match
+(ADR-0013), so once set 2 starts the board only knows about set 2 and the
+3-1 that just happened is gone. Set 1 cannot become another column of the
+same board either, because the mix swaps partners: the two rows would be
+labelled with the wrong pairs.
+
+Decision: Cut pair labels to three capitals a side joined by a slash -
+"JOS/RUX" - and give each mini-set a board of its own.
+
+`scoreboard_short_name()` splits a label on `&` or `/`, takes the first word
+of each side and its first three letters uppercased. A label that is not a
+pair is passed through untouched: "TEAM A" abbreviated to "TEA" and "LOS
+TIGRES" to "LOS" would both be worse than the original, and a club name is
+not two people. Only the scoreboard plates abbreviate; the giant team panels
+above them have room for the whole name, and the summary's winner line and
+stat rows still name people in full.
+
+The footer scoreboard becomes a strip of blocks, left to right in set order:
+the mini-sets already played, each with its own plates, then the board for
+the set on screen. An ordinary match is one block with a column per set,
+exactly as before. Which sets count as "already played" cannot be read from
+the club round alone, because the round moves on to set 2 the moment set 1 is
+recorded while the summary screen is still showing set 1; the host therefore
+says which set is on screen, the same distinction `summary_title()` already
+makes. `ClubRound` gained a read-back of its recorded sets (pairing, winner,
+games per side) so the labels come from the slots that actually played.
+
+Consequences: Short names let the name plate shrink from 330 to 240 px,
+which is what makes two blocks fit beside the 220 px organizer column - a
+render test pins the club footer against the MENU button, and the widest
+single block (five sets) still fits. Three letters can collide: two players
+whose first names start alike read the same on the board, and the fix is a
+nickname in the roster rather than a wider plate. An undo that reopens a
+mini-set drops its block, since the strip is projected from the round rather
+than accumulated.

@@ -46,9 +46,12 @@ Next: reflash both units and replay the session
   match summary, match complete, undo preview, protected reset, pairing,
   diagnostics, recovery; view models projected from CourtService; headless
   render tests at 1024x600 with stress content (spec 18.6 subset)
-- Broadcast-style scoreboard (ADR-0017): the live screen's bottom band and the
-  summary share one widget — team name plate with a serve dot, one cell per
-  set, current set lit, loser's tiebreak points in brackets
+- Broadcast-style scoreboard (ADR-0017, ADR-0021): the live screen's bottom
+  band and the summary share one widget — team name plate with a serve dot,
+  one cell per set, current set lit, loser's tiebreak points in brackets.
+  Pair labels are cut to three capitals a side ("JOS/RUX"), and a club round
+  shows a block per mini-set so the set the mix swapped partners out of keeps
+  its own names
 - Desktop court — `simulator/court-sim`: SDL window, keyboard remotes
   running real RemoteCore, loss injection, journal-backed power cycle,
   pairing flow, `--tour` screenshot mode
@@ -161,12 +164,13 @@ I (91842) gpio: GPIO[0]| InputEn: 1| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulld
 
 # Last verified commands
 
-- `ctest --test-dir build/native` — 214/214 tests pass (2026-08-10, court
-  feedback fixes)
-- `./build/native/simulator/court-sim/court-sim --tour` — 13 screenshots
-  incl. club picker with crowns, mix, standings, match summary
-- `idf.py build` in `firmware/court-display` (esp32s3) — clean (2026-08-10,
-  summary screen + scoreboard)
+- `ctest --test-dir build/native` — 248/248 tests pass (2026-08-13, club
+  scoreboard strip)
+- `./build/native/simulator/court-sim/court-sim --tour` — 17 screenshots
+  incl. club picker with crowns, mix, standings, match summary, and a club
+  set 2 footer carrying both mini-sets
+- `idf.py build` in `firmware/court-display` (esp32s3) — clean (2026-08-13,
+  club scoreboard strip)
 - `idf.py build` in `firmware/button-test` (esp32s3) — clean (2026-08-10)
 - `idf.py -B build-s3 -D SDKCONFIG=sdkconfig.s3 build` in `firmware/remote`
   (esp32s3 DevKit stand-in) — clean (2026-08-10) once deep sleep is off: the

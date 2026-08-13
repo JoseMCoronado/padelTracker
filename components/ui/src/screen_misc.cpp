@@ -85,7 +85,7 @@ void SummaryScreen::update(const SummaryViewModel& model) {
     set_text(title_label, model.title);
     set_text(winner_label, model.winner_label);
     set_text(continue_label, model.continue_label);
-    scoreboard.update(model.scoreboard);
+    scoreboard.update(model.scoreboard, model.prior_scoreboards);
 
     for (std::size_t i = 0; i < kMaxStatRows; ++i) {
         StatRow& stat = stats[i];

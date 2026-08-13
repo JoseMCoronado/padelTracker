@@ -515,7 +515,7 @@ void LiveScreen::update(const LiveViewModel& m) {
     update_team_panel(team_b, m.team_b, m.point_flash == TeamId::B);
 
     set_text(special_label, m.special_label);
-    scoreboard.update(m.scoreboard);
+    scoreboard.update(m.scoreboard, m.prior_scoreboards);
 
     if (m.conflict) {
         lv_obj_clear_flag(conflict_banner, LV_OBJ_FLAG_HIDDEN);

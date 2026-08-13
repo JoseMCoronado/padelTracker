@@ -117,6 +117,62 @@ TEST_CASE("club model: roster tiles, mix labels, standings, coin row") {
     CHECK_FALSE(ui::suggest_next_round_picks(controller, suggested_a, suggested_b));
 }
 
+TEST_CASE("scoreboard cuts pair labels to three capitals a side") {
+    CHECK(ui::scoreboard_short_name("JOSE & RUXANDRA") == "JOS/RUX");
+    CHECK(ui::scoreboard_short_name("Jose / Zoe") == "JOS/ZOE");
+    CHECK(ui::scoreboard_short_name("Maximiliano Alejandro & Sebastian Rodriguez") == "MAX/SEB");
+    CHECK(ui::scoreboard_short_name("Al & Bo") == "AL/BO");  // shorter than three
+
+    // Not a pair: a club or team name is left alone rather than mangled.
+    CHECK(ui::scoreboard_short_name("LOS TIGRES") == "LOS TIGRES");
+    CHECK(ui::scoreboard_short_name("TEAM A") == "TEAM A");
+    CHECK(ui::scoreboard_short_name("LOS TIGRES &") == "LOS TIGRES &");
+}
+
+TEST_CASE("club prior boards keep each mini-set with the pairing that played it") {
+    MemoryRosterStore store;
+    NullResultsLog log;
+    FakeClock clock;
+    PlayerRoster roster(store);
+    ClubController controller(log, clock);
+
+    const auto find = [&](const char* name) {
+        for (const auto& player : roster.players()) {
+            if (player.name == name) {
+                return player;
+            }
+        }
+        FAIL("missing seeded player: " << name);
+        return application::Player{};
+    };
+    REQUIRE_FALSE(controller
+                      .start_round({find("Adrien"), find("Lewis"), find("Louis"), find("Luigi")}, 0)
+                      .has_value());
+    CHECK(ui::build_club_prior_boards(controller, 1).empty());
+
+    controller.on_set_complete(club_set_state(TeamId::A, 1));  // ADRIEN & LEWIS 3-1
+    // The set-1 summary still shows set 1 itself, so nothing sits beside it.
+    CHECK(ui::build_club_prior_boards(controller, 1).empty());
+
+    const std::vector<ui::ScoreboardModel> boards = ui::build_club_prior_boards(controller, 2);
+    REQUIRE(boards.size() == 1);
+    CHECK(boards[0].name_a == "ADR/LEW");
+    CHECK(boards[0].name_b == "LOU/LUI");
+    CHECK_FALSE(boards[0].serving.has_value());
+    REQUIRE(boards[0].columns.size() == 1);
+    CHECK(boards[0].columns[0].games_a == "3");
+    CHECK(boards[0].columns[0].games_b == "1");
+    CHECK_FALSE(boards[0].columns[0].current);
+    REQUIRE(boards[0].columns[0].won.has_value());
+    CHECK(*boards[0].columns[0].won == TeamId::A);
+
+    // Set 2 is played by the mixed pairing, and set 1 stays as it was.
+    controller.on_set_complete(club_set_state(TeamId::B, 0));
+    const std::vector<ui::ScoreboardModel> after = ui::build_club_prior_boards(controller, 2);
+    REQUIRE(after.size() == 1);
+    CHECK(after[0].name_a == "ADR/LEW");
+}
+
 TEST_CASE("preset names and configs stay index-aligned") {
     REQUIRE(ui::preset_names().size() == 5);
     CHECK(ui::preset_config(0).game_rule == domain::GameRule::Advantage);
@@ -182,8 +238,9 @@ TEST_CASE("scoreboard keeps one column per set with the loser's tiebreak points"
     const ui::LiveViewModel model =
         ui::build_live_model(f.service, f.settings, f.clock.now_ms());
 
-    // Player names beat the configured team name on the scoreboard.
-    CHECK(model.scoreboard.name_a == "JOSE / ZOE");
+    // Player names beat the configured team name on the scoreboard, cut to
+    // three capitals a side.
+    CHECK(model.scoreboard.name_a == "JOS/ZOE");
     REQUIRE(model.scoreboard.columns.size() == 2);
     CHECK(model.scoreboard.columns[0].games_a == "6");
     CHECK(model.scoreboard.columns[0].games_b == "0");

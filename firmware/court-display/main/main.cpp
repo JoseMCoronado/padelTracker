@@ -885,6 +885,15 @@ struct CourtApp {
         model.complete = ui::build_complete_model(*service, settings, match_duration_ms);
         model.summary = ui::build_summary_model(*service, settings, match_duration_ms,
                                                 summary_title(), summary_continue_label());
+        if (club_active) {
+            // The mix swaps partners, so the mini-set already played keeps its
+            // own board next to the one for the set on screen. The summary
+            // reads back the set the round has already moved past.
+            model.live.prior_scoreboards =
+                ui::build_club_prior_boards(*club, club->set_number());
+            model.summary.prior_scoreboards = ui::build_club_prior_boards(
+                *club, club->stage() == domain::ClubStage::Complete ? 2 : 1);
+        }
         model.club = ui::build_club_model(*roster, *club, club_hint);
         model.club.suggested_a = club_suggested_a;
         model.club.suggested_b = club_suggested_b;

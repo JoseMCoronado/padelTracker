@@ -38,6 +38,15 @@ struct ClubStanding {
     int differential = 0;  // +games won side, -games lost side, both sets
 };
 
+// A mini-set already played, with the pairing that played it: the mix swaps
+// partners, so a finished set cannot be reprinted with the current teams.
+struct ClubSetResult {
+    ClubPairing pairing{};
+    TeamId winner{TeamId::A};
+    std::uint8_t games_a = 0;  // in pairing.team_a order
+    std::uint8_t games_b = 0;
+};
+
 // Slot pairs that must never end up as teammates. A court can carry two of
 // them: the Top 2 that stayed here and the Top 2 that came up from the court
 // below, since the sheet bars both from partnering the following round.
@@ -88,6 +97,11 @@ public:
     // can walk a finished mini-set back into play. False when nothing has
     // been recorded yet.
     bool undo_last_set_result();
+
+    // The mini-sets already played, oldest first, for a scoreboard that has
+    // to print each one with the partners who actually played it.
+    int recorded_set_count() const;
+    ClubSetResult set_result(int index) const;
 
     // --- Available once stage() == Complete --------------------------------
     // Sorted best -> worst (wins desc, then differential desc; the coin

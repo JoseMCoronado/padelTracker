@@ -823,6 +823,15 @@ struct App {
         model.complete = ui::build_complete_model(*service, settings, match_duration_ms);
         model.summary = ui::build_summary_model(*service, settings, match_duration_ms,
                                                 summary_title(), summary_continue_label());
+        if (club_active) {
+            // The mix swaps partners, so the mini-set already played keeps its
+            // own board next to the one for the set on screen. The summary
+            // reads back the set the round has already moved past.
+            model.live.prior_scoreboards =
+                ui::build_club_prior_boards(*club, club->set_number());
+            model.summary.prior_scoreboards = ui::build_club_prior_boards(
+                *club, club->stage() == domain::ClubStage::Complete ? 2 : 1);
+        }
         model.club = ui::build_club_model(*roster, *club, club_hint);
         model.club.suggested_a = club_suggested_a;
         model.club.suggested_b = club_suggested_b;
@@ -913,8 +922,8 @@ int run_tour(App& app, const std::string& out_dir) {
     m.live.court_label = "COURT 12 - CENTER";
     m.live.mode_label = "STANDARD / ADV / MTB";
     m.live.status_label = "LIVE";
-    m.live.scoreboard.name_a = "MAXIMILIANO / ALEJANDRO";
-    m.live.scoreboard.name_b = "SEBASTIAN / MAXIMILIANO";
+    m.live.scoreboard.name_a = "MAX/ALE";
+    m.live.scoreboard.name_b = "SEB/MAX";
     m.live.scoreboard.serving = TeamId::A;
     m.live.scoreboard.columns = {{"7", "6", "", "(5)", false, TeamId::A},
                                  {"4", "6", "", "", false, TeamId::B},
@@ -1049,6 +1058,36 @@ int run_tour(App& app, const std::string& out_dir) {
     app.court_ui.debug_open_reset_dialog(2);
     app.court_ui.render(m);
     if (!settle_and_shoot("16-reset-confirm")) return 1;
+
+    // Club set 2: the mix swapped partners, so set 1 keeps its own board next
+    // to the mini-set in progress. Leaving Live dismisses the reset dialog.
+    m.screen = ui::Screen::MatchSummary;
+    app.court_ui.render(m);
+    m.screen = ui::Screen::Live;
+    m.live.undo_preview.reset();
+    m.live.mode_label = "MINI-SET / GP";
+    m.live.team_a.name = "JOSE & ZOE";
+    m.live.team_a.players = "";
+    m.live.team_a.points = "40";
+    m.live.team_b.name = "WILLIAM & RUXANDRA";
+    m.live.team_b.players = "";
+    m.live.team_b.points = "30";
+    m.live.special_label = "";
+    m.live.paused = false;
+    m.live.status_label = "LIVE";
+    m.live.storage_fault = false;
+    m.live.radio_ok = true;
+    m.live.scoreboard.name_a = "JOS/ZOE";
+    m.live.scoreboard.name_b = "WIL/RUX";
+    m.live.scoreboard.serving = TeamId::A;
+    m.live.scoreboard.columns = {{"2", "2", "", "", true, std::nullopt}};
+    ui::ScoreboardModel club_set1{};
+    club_set1.name_a = "JOS/RUX";
+    club_set1.name_b = "WIL/ZOE";
+    club_set1.columns = {{"3", "1", "", "", false, TeamId::A}};
+    m.live.prior_scoreboards = {club_set1};
+    app.court_ui.render(m);
+    if (!settle_and_shoot("17-club-live-two-sets")) return 1;
 
     return 0;
 }

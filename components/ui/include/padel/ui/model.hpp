@@ -75,11 +75,16 @@ struct ScoreColumn {
 };
 
 struct ScoreboardModel {
-    std::string name_a;                // short pair label, e.g. "TRIAY / BREA"
+    std::string name_a;                // short pair label, e.g. "TRI/BRE"
     std::string name_b;
     std::vector<ScoreColumn> columns;  // completed sets, set in progress last
     std::optional<TeamId> serving{};
 };
+
+// Club round: the mini-sets already played, each keeping its own pairing
+// because the mix swaps partners between sets. Drawn as extra scoreboard
+// blocks to the left of the board for the set on screen.
+using PriorScoreboards = std::vector<ScoreboardModel>;
 
 struct LiveViewModel {
     std::string court_label;
@@ -89,6 +94,7 @@ struct LiveViewModel {
     TeamPanelModel team_a;
     TeamPanelModel team_b;
     ScoreboardModel scoreboard;
+    PriorScoreboards prior_scoreboards;
     bool radio_ok = true;
     bool storage_fault = false;
     bool conflict = false;       // BOTH TEAMS PRESSED banner
@@ -115,6 +121,7 @@ struct SummaryViewModel {
     std::string title;           // "SET 1 COMPLETE" / "MATCH COMPLETE"
     std::string winner_label;    // "JOSE & ZOE WIN"
     ScoreboardModel scoreboard;  // final set-by-set, same widget as live
+    PriorScoreboards prior_scoreboards;
     // Ordered label/value stat rows: duration, points won, longest streak.
     std::vector<std::pair<std::string, std::string>> stats;
     std::string continue_label = "CONTINUE";

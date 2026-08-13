@@ -30,6 +30,16 @@ public:
         std::string team_b;
     };
 
+    // A finished mini-set with the names that played it; the mix swaps
+    // partners, so set 1 keeps its own pairing on the scoreboard.
+    struct SetScoreline {
+        std::string team_a;  // "JOSE & RUXANDRA"
+        std::string team_b;
+        std::uint8_t games_a = 0;
+        std::uint8_t games_b = 0;
+        TeamId winner{TeamId::A};
+    };
+
     struct StandingRow {
         Player player;
         std::uint8_t wins = 0;
@@ -60,6 +70,9 @@ public:
 
     // "JOSE & ZOE took set 1 (3-1)" once set 1 is in; shown on the mix screen.
     const std::string& last_set_summary() const { return last_set_summary_; }
+
+    // The mini-sets already played, oldest first, each with its own pairing.
+    std::vector<SetScoreline> recorded_sets() const;
 
     // Feed the completed mini-set. On the second set this finalizes the
     // standings; the results log is written by finish_round().

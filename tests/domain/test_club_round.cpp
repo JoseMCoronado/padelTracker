@@ -146,6 +146,34 @@ TEST_CASE("a replayed set 2 produces the standings of the replay, not the undone
     CHECK(round.standings()[0].wins == 2);
 }
 
+TEST_CASE("recorded sets read back with their own pairing and games per side") {
+    ClubRound round;
+    CHECK(round.recorded_set_count() == 0);
+
+    round.record_set_result(TeamId::B, 3, 1);  // C&D take set 1
+    REQUIRE(round.recorded_set_count() == 1);
+    const domain::ClubSetResult set1 = round.set_result(0);
+    CHECK(pair_is(set1.pairing.team_a, 0, 1));
+    CHECK(pair_is(set1.pairing.team_b, 2, 3));
+    CHECK(set1.winner == TeamId::B);
+    // The winner's games belong to whichever side won, not always to A.
+    CHECK(set1.games_a == 1);
+    CHECK(set1.games_b == 3);
+
+    round.record_set_result(TeamId::A, 3, 2);
+    REQUIRE(round.recorded_set_count() == 2);
+    const domain::ClubSetResult set2 = round.set_result(1);
+    CHECK(pair_is(set2.pairing.team_a, 2, 0));  // the mix, not the set 1 teams
+    CHECK(pair_is(set2.pairing.team_b, 3, 1));
+    CHECK(set2.games_a == 3);
+    CHECK(set2.games_b == 2);
+
+    // An undo takes the set back off the board.
+    REQUIRE(round.undo_last_set_result());
+    CHECK(round.recorded_set_count() == 1);
+    CHECK(round.set_result(0).games_b == 3);  // set 1 is untouched
+}
+
 TEST_CASE("tied differential resolved by coin flip") {
     // Set 1: {0,1} win 3-2. Set 2 mix: {0,2} vs {1,3}, and {1,3} win 3-2.
     // Wins: slot 1 = 2. Slot 0: +1-1=0, 1 win. Slot 3: -1+1=0, 1 win.

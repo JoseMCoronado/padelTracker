@@ -230,6 +230,49 @@ TEST_CASE("every screen renders at 1024x600 with stress content, labels in bound
     }
 }
 
+TEST_CASE("club footer: the played mini-set sits beside the live board, clear of MENU") {
+    ui::UiModel m = stress_model(ui::Screen::Live);
+    m.live.conflict = false;
+    // A club mini-set is first to 3, so each board is one column wide, and the
+    // mix means the finished set keeps a pairing of its own.
+    m.live.scoreboard.name_a = "JOS/ZOE";
+    m.live.scoreboard.name_b = "WIL/RUX";
+    m.live.scoreboard.columns = {{"2", "0", "", "", true, std::nullopt}};
+    ui::ScoreboardModel set1{};
+    set1.name_a = "JOS/RUX";
+    set1.name_b = "WIL/ZOE";
+    set1.columns = {{"3", "1", "", "", false, TeamId::A}};
+    m.live.prior_scoreboards = {set1};
+
+    court_ui().render(m);
+    settle();
+    require_labels_in_bounds();
+    require_screen_painted();
+
+    // Set 1 first, the set in progress to the right of it.
+    lv_obj_t* set1_name = find_label("JOS/RUX");
+    lv_obj_t* live_name = find_label("JOS/ZOE");
+    REQUIRE(set1_name != nullptr);
+    REQUIRE(live_name != nullptr);
+    lv_area_t played;
+    lv_area_t playing;
+    lv_obj_get_coords(set1_name, &played);
+    lv_obj_get_coords(live_name, &playing);
+    CHECK(played.x2 < playing.x1);
+
+    // Two boards still have to clear the organizer column they share the
+    // footer with, or the strip paints over MENU.
+    lv_obj_t* live_digit = find_label("2");  // rightmost cell of the live board
+    lv_obj_t* menu = find_label(LV_SYMBOL_SETTINGS " MENU");
+    REQUIRE(live_digit != nullptr);
+    REQUIRE(menu != nullptr);
+    lv_area_t digit;
+    lv_area_t menu_coords;
+    lv_obj_get_coords(live_digit, &digit);
+    lv_obj_get_coords(menu, &menu_coords);
+    CHECK(digit.x2 < menu_coords.x1);
+}
+
 TEST_CASE("setup screen fits vertically in both modes: bottom bar on screen") {
     const auto check_bottom_bar = [](const char* start_text) {
         std::vector<lv_obj_t*> labels;

@@ -75,6 +75,28 @@ bool ClubRound::undo_last_set_result() {
     return true;
 }
 
+int ClubRound::recorded_set_count() const {
+    switch (stage_) {
+        case ClubStage::Set1:
+            return 0;
+        case ClubStage::Set2:
+            return 1;
+        case ClubStage::Complete:
+            return 2;
+    }
+    return 0;
+}
+
+ClubSetResult ClubRound::set_result(int index) const {
+    if (index < 0 || index >= recorded_set_count()) {
+        return {};
+    }
+    const SetRecord& set = sets_[static_cast<std::size_t>(index)];
+    const bool a_won = set.winner == TeamId::A;
+    return ClubSetResult{set.pairing, set.winner, a_won ? set.winner_games : set.loser_games,
+                         a_won ? set.loser_games : set.winner_games};
+}
+
 void ClubRound::finalize() {
     wins_ = {};
     diff_ = {};
