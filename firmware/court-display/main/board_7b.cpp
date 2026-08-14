@@ -1,5 +1,6 @@
 #include "board_7b.hpp"
 
+#include <cstddef>
 #include <cstring>
 
 #include "driver/i2c_master.h"
@@ -11,6 +12,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "padel/common/battery.hpp"
 
 namespace board {
 namespace {
@@ -71,6 +73,8 @@ constexpr uint8_t kIoExtRegOutput = 0x03;
 constexpr uint8_t kIoExtRegInput = 0x04;
 constexpr uint8_t kIoExtRegPwm = 0x05;
 constexpr uint8_t kIoExtRegAdc = 0x06;
+// Odd count so the median is a real sample rather than an average of two.
+constexpr std::size_t kBatteryBurstSamples = 9;
 // Backlight PWM drives the AP3032 FB pin and is INVERTED: higher duty =
 // dimmer. Safe range 1–247 (248+ blanks). Usable dimming is roughly
 // duty 30 (full) … 240 (dim); 0–80 looks nearly identical at full.
@@ -407,13 +411,33 @@ std::optional<std::uint16_t> read_battery_raw() {
     return static_cast<std::uint16_t>(bytes[0] | (static_cast<std::uint16_t>(bytes[1]) << 8));
 }
 
-std::optional<std::uint16_t> read_battery_mv() {
-    const auto raw = read_battery_raw();
-    if (!raw) {
-        return std::nullopt;
+BatterySample read_battery_burst() {
+    std::uint16_t samples[kBatteryBurstSamples] = {};
+    BatterySample out{};
+    for (std::size_t i = 0; i < kBatteryBurstSamples; ++i) {
+        // Each ioext_read_bytes ends in a 2 ms delay, so the burst spans
+        // ~20 ms of yielding wait rather than hammering the bus.
+        const auto raw = read_battery_raw();
+        if (!raw) {
+            continue;
+        }
+        // 10-bit ADC, 3.3 V reference, onboard 3:1 divider → scale by 9.9 V.
+        const auto mv =
+            static_cast<std::uint16_t>((static_cast<std::uint32_t>(*raw) * 9900u) / 1023u);
+        if (out.valid_count == 0 || mv < out.min_mv) {
+            out.min_mv = mv;
+        }
+        if (out.valid_count == 0 || mv > out.max_mv) {
+            out.max_mv = mv;
+        }
+        samples[out.valid_count++] = mv;
     }
-    // 10-bit ADC, 3.3 V reference, onboard 3:1 divider → scale by 9.9 V.
-    return static_cast<std::uint16_t>((static_cast<std::uint32_t>(*raw) * 9900u) / 1023u);
+    out.mv = padel::battery::median_mv(samples, out.valid_count);
+    return out;
+}
+
+std::optional<std::uint16_t> read_battery_mv() {
+    return read_battery_burst().mv;
 }
 
 void set_brightness(std::uint8_t percent) {

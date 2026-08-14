@@ -23,6 +23,12 @@ struct {
     bool pressed = false;
 } s_pointer;
 
+// Callbacks the shared CourtUi was built with only record that they fired; the
+// host side of each action is tested where the host lives.
+struct {
+    int undo_confirmed = 0;
+} s_calls;
+
 std::vector<lv_color_t>& framebuffer() {
     static std::vector<lv_color_t> buf(static_cast<std::size_t>(kWidth) * kHeight);
     return buf;
@@ -62,7 +68,9 @@ ui::CourtUi& court_ui() {
     static ui::CourtUi* instance = [] {
         ensure_lvgl();
         auto* ui_ptr = new ui::CourtUi();
-        ui_ptr->create(ui::UiCallbacks{});  // no-op callbacks: render-only checks
+        ui::UiCallbacks callbacks{};  // the rest stay no-ops: render-only checks
+        callbacks.undo_confirmed = [] { ++s_calls.undo_confirmed; };
+        ui_ptr->create(std::move(callbacks));
         return ui_ptr;
     }();
     return *instance;
@@ -227,6 +235,46 @@ TEST_CASE("every screen renders at 1024x600 with stress content, labels in bound
         settle();
         require_labels_in_bounds();
         require_screen_painted();
+    }
+}
+
+TEST_CASE("no post-match screen is a dead end: BACK undoes the last point") {
+    // Every screen the flow can be sitting on with a finished score on the
+    // board. Undo is not lifecycle-guarded (ADR-0004), so each of them has to
+    // offer the organizer a way back without reaching for a remote.
+    const ui::Screen screens[] = {ui::Screen::MatchSummary, ui::Screen::MatchComplete,
+                                  ui::Screen::ClubMix, ui::Screen::ClubStandings};
+    for (const ui::Screen screen : screens) {
+        INFO("screen index: " << static_cast<int>(screen));
+        const ui::UiModel m = stress_model(screen);
+        court_ui().render(m);
+        settle();
+
+        lv_obj_t* label = find_label(LV_SYMBOL_LEFT " BACK - UNDO LAST POINT");
+        REQUIRE(label != nullptr);
+        lv_obj_t* button = lv_obj_get_parent(label);
+        lv_area_t coords;
+        lv_obj_get_coords(button, &coords);
+        // A whole finished match hangs on this target, so it stays organizer
+        // sized and fully on screen even under the worst-case content.
+        CHECK(lv_area_get_height(&coords) >= ui::tokens::kOrganizerTarget);
+        CHECK(coords.x1 >= 0);
+        CHECK(coords.x2 < kWidth);
+        CHECK(coords.y1 >= 0);
+        CHECK(coords.y2 < kHeight);
+
+        const int before = s_calls.undo_confirmed;
+        s_pointer.point.x = (coords.x1 + coords.x2) / 2;
+        s_pointer.point.y = (coords.y1 + coords.y2) / 2;
+        for (const bool pressed : {true, false}) {
+            s_pointer.pressed = pressed;
+            for (int i = 0; i < 6; ++i) {
+                lv_tick_inc(16);
+                lv_timer_handler();
+                court_ui().render(m);
+            }
+        }
+        CHECK(s_calls.undo_confirmed == before + 1);
     }
 }
 

@@ -100,7 +100,13 @@ struct LiveViewModel {
     bool conflict = false;       // BOTH TEAMS PRESSED banner
     bool paused = false;
     // Court Li-ion SoC from the Waveshare ADC; empty when no cell / unknown.
+    // Filtered and slew-limited upstream, so it moves a point at a time.
     std::optional<std::uint8_t> battery_percent{};
+    // Low warning, latched with hysteresis upstream so it cannot flicker on
+    // the threshold the way a bare percent comparison would.
+    bool battery_low = false;
+    // Pre-formatted runtime estimate ("~2h 15m"); empty means show nothing.
+    std::string battery_runtime;
     // Last applied backlight brightness (ORGANIZER menu slider, 10–100).
     std::uint8_t brightness_percent = 100;
     // Set for one refresh after a point lands: pulse that panel + "+1".

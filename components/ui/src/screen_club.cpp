@@ -555,8 +555,14 @@ void ClubMixScreen::create(Shared* shared_state) {
     lv_obj_set_width(team_b_label, LV_PCT(100));
     lv_obj_set_style_text_align(team_b_label, LV_TEXT_ALIGN_CENTER, 0);
 
+    lv_obj_t* buttons = transparent_row(column);
+    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    // Last chance to rewind set 1: START SET 2 archives its journal, and from
+    // there an undo can only reach set 2's own points.
+    add_back_undo_button(buttons, this);
     lv_obj_t* start = make_button(
-        column, LV_SYMBOL_PLAY " START SET 2", tokens::kOrganizerTarget,
+        buttons, LV_SYMBOL_PLAY " START SET 2", tokens::kOrganizerTarget,
         [](lv_event_t* e) {
             auto* s = static_cast<ClubMixScreen*>(lv_event_get_user_data(e));
             if (s->shared->callbacks.club_next_set) s->shared->callbacks.club_next_set();
@@ -602,6 +608,9 @@ void ClubStandingsScreen::create(Shared* shared_state) {
     lv_obj_t* buttons = transparent_row(root);
     lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    // Both ways out of this screen close the round, which appends to the
+    // results log; BACK is the only route left once that has happened.
+    add_back_undo_button(buttons, this);
     lv_obj_t* again = make_button(
         buttons, LV_SYMBOL_REFRESH " NEW ROUND", tokens::kOrganizerTarget,
         [](lv_event_t* e) {
@@ -610,13 +619,16 @@ void ClubStandingsScreen::create(Shared* shared_state) {
         },
         this);
     lv_obj_set_style_bg_color(again, tokens::success(), 0);
-    make_button(
-        buttons, "DONE", tokens::kOrganizerTarget,
+    // Red and named for what it gives up: NEW ROUND carries the Top 2 forward
+    // onto opposite teams, this drops the rotation and goes back to setup.
+    lv_obj_t* leave = make_button(
+        buttons, "LEAVE CLUB PLAY", tokens::kOrganizerTarget,
         [](lv_event_t* e) {
             auto* s = static_cast<ClubStandingsScreen*>(lv_event_get_user_data(e));
             if (s->shared->callbacks.club_done) s->shared->callbacks.club_done();
         },
         this);
+    lv_obj_set_style_bg_color(leave, tokens::error(), 0);
 }
 
 void ClubStandingsScreen::update(const ClubViewModel& model) {

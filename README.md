@@ -75,8 +75,10 @@ press, `1`/`2` remote hold-to-undo, `Shift+a`/`b` wired button, `l` packet
 loss, `p` pairing mode, `r` power-cycle (journal recovery), `q` quit.
 
 The last point of a match opens the summary screen — score, duration, points
-won per side, longest run — and CONTINUE from there moves the flow on. An undo
-taken after that point reopens the match and goes back to the live screen.
+won per side, longest run — and CONTINUE from there moves the flow on. A
+finished score is never a dead end: the summary, club mix, club standings and
+complete screens all carry BACK - UNDO LAST POINT, which reopens the match and
+returns to the live screen. A remote hold does the same from anywhere.
 
 Players can be picked from the roster modal (search, NEW PLAYER, ADD
 GUEST) in every mode. If a team name is left at the generic default the
@@ -90,9 +92,27 @@ WIL/ZOE 1) next to the set in progress (JOS/ZOE 2, WIL/RUX 2). After set 2 the
 standings screen shows Top 2 / Bottom 2 (ties broken by an announced automatic
 coin flip). Two players who arrive as a Top 2 can never be teammates: the previous
 round's pair is barred automatically, and double-tapping a name in the picker
-crowns it so the pair coming up from another court is barred too. Roster lives
-in `court-sim-data/roster.txt`; per-player results append to
+crowns it so the pair coming up from another court is barred too. BACK on the
+mix screen is the last chance to reopen set 1 — START SET 2 archives its
+journal. NEW ROUND carries the Top 2 forward onto opposite teams; the red LEAVE
+CLUB PLAY closes the round and drops the rotation. Per-player results append to
 `court-sim-data/club_results.csv` when the round is closed.
+
+## The club list
+
+Who the picker offers is `config/players.txt` — one name per line, `#` for
+comments — and nothing else. The simulator reads it from the source tree, so
+adding a regular needs no rebuild, and the court display gets the same file
+baked into its binary, so there it lands on the next flash (ADR-0023).
+
+The list owns the names in it: delete a line and that player is gone on the
+next start. Players added with NEW PLAYER on the touchscreen are not in the
+list and are never removed by it, so a session's walk-ups survive an edit.
+`court-sim-data/roster.txt` (`/littlefs/roster.txt` on the device) is the
+runtime side of that — it holds the ids results are logged under and marks each
+player `club` or `local` — and it is not a file to edit by hand. An unreadable
+or nameless list leaves the roster exactly as it was, so a bad path can never
+empty the club.
 
 ## Firmware builds
 

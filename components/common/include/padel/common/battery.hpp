@@ -2,6 +2,7 @@
 // Hardware measurement lives in the board profile; this is pure math.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -33,5 +34,67 @@ std::uint32_t estimate_runtime_min(std::uint8_t soc_percent,
 std::string format_runtime_estimate(std::optional<std::uint8_t> soc_percent,
                                     std::uint16_t capacity_mah = kCourtBatteryCapacityMah,
                                     std::uint16_t avg_draw_ma = kCourtAvgDrawMa);
+
+// Median of a burst of readings. Empty when count is 0. The caller passes
+// only successful reads; a median (not a mean) is used so one corrupt I2C
+// transfer in the burst cannot drag the result.
+std::optional<std::uint16_t> median_mv(const std::uint16_t* samples, std::size_t count);
+
+// Turns the noisy, under-load ADC feed into a percentage stable enough to
+// sit on a scoreboard. The raw court reading swings with the backlight
+// boost, panel refresh and radio bursts, and one ADC count is already ~1.2
+// SoC points in the middle of the OCV curve, so an unfiltered sample jumps
+// by tens of points between reads.
+//
+// Clock-free: the caller owns the sample cadence, and the defaults assume
+// the court's 5 s tick (~40 s smoothing constant, unknown after ~30 s of
+// failed reads).
+class BatteryMonitor {
+public:
+    struct Config {
+        // A sample this far from the running estimate is treated as a bad
+        // read rather than a real step: cells do not move that fast.
+        std::uint16_t outlier_mv = 300;
+        // Weight of each accepted sample in the millivolt average: 1/n.
+        std::uint8_t ema_divisor = 8;
+        // Largest displayed percent change per accepted sample.
+        std::uint8_t max_pct_step = 1;
+        // Consecutive bad samples held before the value goes unknown.
+        std::uint8_t misses_to_unknown = 6;
+        // Warning latches at or below enter, clears at or above exit.
+        std::uint8_t low_enter_pct = 15;
+        std::uint8_t low_exit_pct = 20;
+    };
+
+    BatteryMonitor() = default;
+    explicit BatteryMonitor(Config config) : config_(config) {}
+
+    // Feeds one reading; empty means the read failed. Readings below
+    // kNoCellMv and implausible jumps are held, not shown.
+    void add_sample(std::optional<std::uint16_t> mv);
+
+    // Filtered millivolts, for diagnostics. Empty until the first good read.
+    std::optional<std::uint16_t> smoothed_mv() const { return smoothed_mv_; }
+
+    // Slew-limited SoC for the UI. Empty when unknown / no cell.
+    std::optional<std::uint8_t> percent() const { return percent_; }
+
+    // Low-battery warning with hysteresis, so it cannot flicker on the
+    // threshold. False while the level is unknown.
+    bool low() const { return low_; }
+
+    // Consecutive bad samples since the last good one, for diagnostics.
+    std::uint8_t misses() const { return misses_; }
+
+    // Drops to unknown, as if no cell had ever been read.
+    void reset();
+
+private:
+    Config config_{};
+    std::optional<std::uint16_t> smoothed_mv_{};
+    std::optional<std::uint8_t> percent_{};
+    bool low_ = false;
+    std::uint8_t misses_ = 0;
+};
 
 }  // namespace padel::battery

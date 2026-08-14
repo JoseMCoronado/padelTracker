@@ -54,6 +54,16 @@ domain::MatchState completed_set(TeamId winner, std::uint8_t loser_games) {
     return state;
 }
 
+// The regulars the round tests below pick from. Deliberately their own list
+// rather than config/players.txt: who plays on a Tuesday is not a fact these
+// tests should break on.
+const std::vector<std::string>& regulars() {
+    static const std::vector<std::string> names = {
+        "Jose",    "Zoe",    "William", "Szewei",  "Ruxandra", "Lewis",
+        "Luigi",   "Raymond", "Paulina", "Vineet", "Louis",    "Adrien"};
+    return names;
+}
+
 Player must_find(const PlayerRoster& roster, const char* name) {
     for (const Player& player : roster.players()) {
         if (player.name == name) {
@@ -71,34 +81,137 @@ std::array<Player, 4> four_players(PlayerRoster& roster) {
 
 }  // namespace
 
-TEST_CASE("empty store is seeded with the club regulars and persisted") {
+TEST_CASE("club list parses names, skipping comments and blanks") {
+    const auto names = application::parse_club_list(
+        "# the club list\n"
+        "\n"
+        "Jose\n"
+        "  Zoe  \n"
+        "Marcelo # crowned last week\n"
+        "   \n"
+        "jose\n"          // same player, different casing
+        "Sonny");         // no trailing newline
+    REQUIRE(names.size() == 4);
+    CHECK(names[0] == "Jose");
+    CHECK(names[1] == "Zoe");
+    CHECK(names[2] == "Marcelo");
+    CHECK(names[3] == "Sonny");
+}
+
+TEST_CASE("club list fills an empty roster and persists it once") {
     MemoryRosterStore store;
-    PlayerRoster roster(store);
-    REQUIRE(roster.players().size() == 12);
+    PlayerRoster roster{store};
+    CHECK(roster.players().empty());  // the list is the only source of regulars
+    CHECK(store.saves == 0);
+
+    const auto sync = roster.apply_club_list({"Zoe", "Jose", "Adrien"});
+    CHECK(sync.applied);
+    CHECK(sync.added == 3);
+    CHECK(sync.removed == 0);
     CHECK(store.saves == 1);
+    REQUIRE(roster.players().size() == 3);
+    // Sorted by name for stable picker grids, with unique ids.
+    CHECK(roster.players()[0].name == "Adrien");
+    CHECK(roster.players()[2].name == "Zoe");
+    std::vector<std::uint32_t> ids;
+    for (const Player& player : roster.players()) {
+        CHECK(player.from_club_list);
+        CHECK_FALSE(player.guest);
+        ids.push_back(player.id);
+    }
+    std::sort(ids.begin(), ids.end());
+    CHECK(std::adjacent_find(ids.begin(), ids.end()) == ids.end());
+}
+
+TEST_CASE("club list is authoritative for its own names, but not for courtside additions") {
+    MemoryRosterStore store;
+    PlayerRoster roster{store};
+    roster.apply_club_list({"Zoe", "Jose"});
+    const std::uint32_t zoe_id = roster.players()[1].id;
+    REQUIRE(roster.players()[1].name == "Zoe");
+
+    // A walk-up typed in on the court.
+    const auto walk_up = roster.add_player("Marcelo");
+    REQUIRE(walk_up.has_value());
+    CHECK_FALSE(walk_up->from_club_list);
+
+    // Jose leaves the club, Sarah joins it.
+    const auto sync = roster.apply_club_list({"Zoe", "Sarah"});
+    CHECK(sync.added == 1);
+    CHECK(sync.removed == 1);
     std::vector<std::string> names;
     for (const Player& player : roster.players()) {
         names.push_back(player.name);
     }
-    for (const char* expected :
-         {"Jose", "Zoe", "William", "Szewei", "Ruxandra", "Lewis", "Luigi",
-          "Raymond", "Paulina", "Vineet", "Louis", "Adrien"}) {
-        CHECK(std::find(names.begin(), names.end(), expected) != names.end());
-    }
+    CHECK(names == std::vector<std::string>{"Marcelo", "Sarah", "Zoe"});
+    // Zoe stayed on the list, so she keeps the id her results are logged under.
+    CHECK(roster.find(zoe_id).has_value());
+    CHECK(roster.find(zoe_id)->name == "Zoe");
 }
 
-TEST_CASE("existing store is not re-seeded") {
+TEST_CASE("a name added to the club list adopts the player typed in courtside") {
     MemoryRosterStore store;
-    store.stored = {{7, "Maria", false}};
-    PlayerRoster roster(store);
+    PlayerRoster roster{store};
+    const auto walk_up = roster.add_player("Marcelo");
+    REQUIRE(walk_up.has_value());
+
+    // Same player, now a regular: no duplicate row, and the id is kept.
+    const auto sync = roster.apply_club_list({"marcelo"});
+    CHECK(sync.added == 0);
+    CHECK(sync.removed == 0);
+    REQUIRE(roster.players().size() == 1);
+    CHECK(roster.players()[0].id == walk_up->id);
+    CHECK(roster.players()[0].name == "Marcelo");  // the courtside spelling stands
+    CHECK(roster.players()[0].from_club_list);
+
+    // And now the list can drop them.
+    CHECK(roster.apply_club_list({"Zoe"}).removed == 1);
+}
+
+TEST_CASE("an empty club list never wipes the roster") {
+    MemoryRosterStore store;
+    store.stored = {{7, "Maria", false, true}};
+    PlayerRoster roster{store};
+    REQUIRE(roster.players().size() == 1);
+
+    // A missing file, a failed read or a truncated one all arrive here as an
+    // empty list; obeying it would delete the whole club.
+    const auto sync = roster.apply_club_list({});
+    CHECK_FALSE(sync.applied);
+    CHECK(sync.added == 0);
+    CHECK(sync.removed == 0);
+    CHECK(roster.players().size() == 1);
+    CHECK(store.saves == 0);
+}
+
+TEST_CASE("an unchanged club list does not rewrite the roster file") {
+    MemoryRosterStore store;
+    PlayerRoster roster{store};
+    roster.apply_club_list({"Zoe", "Jose"});
+    REQUIRE(store.saves == 1);
+
+    const auto sync = roster.apply_club_list({"Jose", "Zoe"});  // same names, reordered
+    CHECK(sync.applied);
+    CHECK(sync.added == 0);
+    CHECK(sync.removed == 0);
+    CHECK(store.saves == 1);  // every boot would otherwise burn a flash write
+}
+
+TEST_CASE("an existing store is loaded verbatim, without a write") {
+    MemoryRosterStore store;
+    store.stored = {{7, "Maria", false, false}};
+    PlayerRoster roster{store};
     REQUIRE(roster.players().size() == 1);
     CHECK(roster.players()[0].name == "Maria");
+    CHECK(roster.players()[0].id == 7);  // ids outlive everything; results log them
+    CHECK_FALSE(roster.players()[0].from_club_list);
     CHECK(store.saves == 0);
 }
 
 TEST_CASE("search filter is case-insensitive substring") {
     MemoryRosterStore store;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     roster.add_player("John");
 
     const auto jo = roster.filtered("jo");
@@ -120,6 +233,7 @@ TEST_CASE("search filter is case-insensitive substring") {
 TEST_CASE("add_player trims, rejects duplicates and empties, persists") {
     MemoryRosterStore store;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     const int saves_after_seed = store.saves;
 
     const auto maria = roster.add_player("  Maria  ");
@@ -135,6 +249,7 @@ TEST_CASE("add_player trims, rejects duplicates and empties, persists") {
 TEST_CASE("guests are numbered, findable, and never persisted") {
     MemoryRosterStore store;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     const int saves_before = store.saves;
 
     const Player g1 = roster.make_guest();
@@ -154,6 +269,7 @@ TEST_CASE("full round: labels, mix, standings, results log") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     const auto players = four_players(roster);  // Adrien&Lewis vs Louis&Luigi
@@ -200,6 +316,7 @@ TEST_CASE("recorded sets keep the names that played them") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
@@ -233,6 +350,7 @@ TEST_CASE("an undo reopens set 2 and the results log is still written once") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
@@ -259,6 +377,7 @@ TEST_CASE("undo walks back through set 1 and stops at the start of the round") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
@@ -276,6 +395,7 @@ TEST_CASE("crowned players cannot be teammates even when they never were Top 2")
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     const auto players = four_players(roster);  // Adrien&Lewis vs Louis&Luigi
@@ -293,6 +413,7 @@ TEST_CASE("tied differential announces the coin flip") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     REQUIRE_FALSE(controller.start_round(four_players(roster), 0).has_value());
@@ -319,6 +440,7 @@ TEST_CASE("previous top2 cannot be teammates but may play on opposite sides") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     const auto players = four_players(roster);
@@ -343,6 +465,7 @@ TEST_CASE("abandoning an incomplete round keeps the prior top2 teammate guard") 
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     const auto players = four_players(roster);
@@ -370,6 +493,7 @@ TEST_CASE("duplicate player and double start are rejected") {
     MemoryResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     auto players = four_players(roster);

@@ -57,6 +57,11 @@
 #include "padel/ui/model_builder.hpp"
 #include "storage.hpp"
 
+// config/players.txt, embedded by main/CMakeLists.txt. EMBED_TXTFILES appends
+// a null terminator, so this is usable straight as a C string. Editing that
+// file and reflashing is the whole procedure for changing the club list.
+extern const char kEmbeddedClubList[] asm("_binary_players_txt_start");
+
 namespace {
 
 using namespace padel;
@@ -297,17 +302,28 @@ std::string display_state_label() {
     return label + ")";
 }
 
-std::mutex s_battery_mutex;
-std::optional<std::uint16_t> s_battery_mv;
+// Filtered battery state, produced on the LVGL task (the ADC shares I2C with
+// touch) and consumed by the app task. Only the smoothed values cross the
+// mutex; the raw burst rides along for Diagnostics.
+struct BatteryStatus {
+    std::optional<std::uint16_t> mv{};       // smoothed, not the last sample
+    std::optional<std::uint8_t> percent{};   // slew-limited
+    bool low = false;
+    board::BatterySample last_burst{};
+    std::uint8_t misses = 0;
+};
 
-std::optional<std::uint16_t> latest_battery_mv() {
+std::mutex s_battery_mutex;
+BatteryStatus s_battery;
+
+BatteryStatus latest_battery() {
     std::lock_guard<std::mutex> lock(s_battery_mutex);
-    return s_battery_mv;
+    return s_battery;
 }
 
-void publish_battery_mv(std::optional<std::uint16_t> mv) {
+void publish_battery(const BatteryStatus& status) {
     std::lock_guard<std::mutex> lock(s_battery_mutex);
-    s_battery_mv = mv;
+    s_battery = status;
 }
 
 std::uint8_t load_brightness_nvs() {
@@ -382,7 +398,7 @@ struct CourtApp {
     bool storage_degraded = false;
 
     std::uint8_t brightness_percent = 100;
-    std::optional<std::uint16_t> battery_mv{};
+    BatteryStatus battery{};
 
     void create_pairing_service() {
         pairing = std::make_unique<application::PairingService>(
@@ -392,14 +408,30 @@ struct CourtApp {
         pairing->load_assignments();
     }
 
+    // Reconciles the roster with the embedded club list on every boot. A
+    // player the list no longer names goes; one added courtside with NEW
+    // PLAYER is not the list's to touch and stays.
+    void apply_club_list() {
+        const auto sync = roster->apply_club_list(application::parse_club_list(kEmbeddedClubList));
+        if (!sync.applied) {
+            ESP_LOGW("club", "embedded club list is empty; roster left as it was");
+            return;
+        }
+        ESP_LOGI("club", "club list: %u players (+%d -%d)",
+                 static_cast<unsigned>(roster->players().size()), sync.added, sync.removed);
+    }
+
     // Boot sequence per spec 12.2: mount -> recover journal -> rebuild
     // service -> restore allow-list -> Recovery or Setup screen.
     void boot(bool storage_ok) {
         storage_degraded = !storage_ok;
 
-        // Roster seeds itself (in RAM only when the mount failed).
+        // The roster file holds ids and courtside additions; the club list
+        // embedded in this binary decides who the regulars are (in RAM only
+        // when the mount failed, so the picker still works degraded).
         roster_store = std::make_unique<application::FileRosterStore>("/littlefs/roster.txt");
         roster = std::make_unique<application::PlayerRoster>(*roster_store);
+        apply_club_list();
         results_log =
             std::make_unique<application::FileResultsLog>("/littlefs/club_results.csv");
         club = std::make_unique<application::ClubController>(*results_log, clock);
@@ -748,22 +780,36 @@ struct CourtApp {
         rows.push_back({"Board profile", "Waveshare 7B 1024x600"});
         rows.push_back({"Court id", std::to_string(kCourtId)});
         rows.push_back({"Radio channel", std::to_string(CONFIG_PADEL_COURT_WIFI_CHANNEL)});
-        const auto soc = battery_mv ? padel::battery::mv_to_percent(*battery_mv) : std::nullopt;
-        if (soc) {
-            rows.push_back({"Battery", std::to_string(*soc) + "%"});
+        if (battery.percent) {
+            rows.push_back({"Battery", std::to_string(*battery.percent) + "%"});
         } else {
             rows.push_back({"Battery", "unknown / no cell"});
         }
-        if (battery_mv) {
+        if (battery.mv) {
             char volt[16];
-            std::snprintf(volt, sizeof(volt), "%u.%02u V", *battery_mv / 1000u,
-                          (*battery_mv % 1000u) / 10u);
+            std::snprintf(volt, sizeof(volt), "%u.%02u V", *battery.mv / 1000u,
+                          (*battery.mv % 1000u) / 10u);
             rows.push_back({"Battery voltage", volt});
         } else {
             rows.push_back({"Battery voltage", "n/a"});
         }
         rows.push_back(
-            {"Est. runtime", padel::battery::format_runtime_estimate(soc)});
+            {"Est. runtime", padel::battery::format_runtime_estimate(battery.percent)});
+        // Raw spread inside one ~20 ms burst: how far the rail actually moves
+        // while the backlight boost and panel refresh run. A wide spread here
+        // is the reason the displayed percent is filtered at all.
+        if (battery.last_burst.valid_count > 0) {
+            char burst[48];
+            std::snprintf(burst, sizeof(burst), "%u mV (%u-%u, n=%u)",
+                          static_cast<unsigned>(battery.last_burst.mv.value_or(0)),
+                          static_cast<unsigned>(battery.last_burst.min_mv),
+                          static_cast<unsigned>(battery.last_burst.max_mv),
+                          static_cast<unsigned>(battery.last_burst.valid_count));
+            rows.push_back({"Battery ADC burst", burst});
+        } else {
+            rows.push_back({"Battery ADC burst", "no reads"});
+        }
+        rows.push_back({"Battery bad reads", std::to_string(battery.misses)});
         rows.push_back({"Brightness", std::to_string(brightness_percent) + "%"});
         rows.push_back({"Display", display_state_label()});
         rows.push_back({"Buzzer (GPIO" + std::to_string(CONFIG_PADEL_COURT_BUZZER_GPIO) + ")",
@@ -795,8 +841,8 @@ struct CourtApp {
         pairing->tick();
         send_acks();
 
-        // ADC is sampled on the LVGL task (shared I2C with touch).
-        battery_mv = latest_battery_mv();
+        // ADC is sampled and filtered on the LVGL task (shared I2C with touch).
+        battery = latest_battery();
 
         // Wired backup buttons participate in the conflict guard (spec 15).
         if (button_a.pressed_edge(now)) {
@@ -869,11 +915,11 @@ struct CourtApp {
         model.settings = settings;
         model.live = ui::build_live_model(*service, settings, now);
         model.live.brightness_percent = brightness_percent;
-        if (battery_mv) {
-            model.live.battery_percent = padel::battery::mv_to_percent(*battery_mv);
-        } else {
-            model.live.battery_percent = std::nullopt;
-        }
+        model.live.battery_percent = battery.percent;
+        model.live.battery_low = battery.low;
+        model.live.battery_runtime =
+            battery.percent ? padel::battery::format_runtime_estimate(battery.percent)
+                            : std::string{};
         if (now < flash_until_ms) {
             model.live.point_flash = flash_team;
         }
@@ -1007,6 +1053,8 @@ void lvgl_task(void* /*arg*/) {
     court_ui.create(make_callbacks());
 
     ui::UiModel local_model;
+    // Owned by this task alone: only the filtered result is published.
+    padel::battery::BatteryMonitor battery_monitor;
     std::uint64_t last_render_ms = 0;
     std::uint64_t last_battery_sample_ms = 0;
     std::uint8_t applied_brightness = restored;
@@ -1016,7 +1064,34 @@ void lvgl_task(void* /*arg*/) {
 
         const std::uint64_t now = static_cast<std::uint64_t>(esp_timer_get_time() / 1000);
         if (last_battery_sample_ms == 0 || now - last_battery_sample_ms >= 5000) {
-            publish_battery_mv(board::read_battery_mv());
+            const board::BatterySample burst = board::read_battery_burst();
+            const std::uint8_t misses_before = battery_monitor.misses();
+            battery_monitor.add_sample(burst.mv);
+            const bool held = battery_monitor.misses() > misses_before;
+
+            BatteryStatus status{};
+            status.mv = battery_monitor.smoothed_mv();
+            status.percent = battery_monitor.percent();
+            status.low = battery_monitor.low();
+            status.last_burst = burst;
+            status.misses = battery_monitor.misses();
+            publish_battery(status);
+
+            if (held) {
+                ESP_LOGW(TAG, "battery sample held (%u mV, %u consecutive)",
+                         static_cast<unsigned>(burst.mv.value_or(0)),
+                         static_cast<unsigned>(status.misses));
+            } else if (burst.mv) {
+                // INFO, not DEBUG: the build caps logging at INFO, and this
+                // line is the only way to see how far the rail really moves
+                // while the draw constant is still an assumption (ADR-0019).
+                ESP_LOGI(TAG, "battery burst %u mV (%u-%u, n=%u) -> %u mV",
+                         static_cast<unsigned>(*burst.mv),
+                         static_cast<unsigned>(burst.min_mv),
+                         static_cast<unsigned>(burst.max_mv),
+                         static_cast<unsigned>(burst.valid_count),
+                         static_cast<unsigned>(status.mv.value_or(0)));
+            }
             last_battery_sample_ms = now;
         }
 

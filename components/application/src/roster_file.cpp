@@ -6,6 +6,16 @@
 
 namespace padel::application {
 
+namespace {
+
+// Third field of a roster line. Absent on files written before provenance was
+// tracked, and back then every member came from the built-in list, so a
+// two-field line reads as "club".
+constexpr const char* kOriginClub = "club";
+constexpr const char* kOriginLocal = "local";
+
+}  // namespace
+
 std::vector<Player> FileRosterStore::load() {
     std::vector<Player> players;
     std::FILE* file = std::fopen(path_.c_str(), "r");
@@ -19,9 +29,16 @@ std::vector<Player> FileRosterStore::load() {
             continue;
         }
         *sep = '\0';
-        std::string name = sep + 1;
-        while (!name.empty() && (name.back() == '\n' || name.back() == '\r')) {
-            name.pop_back();
+        std::string rest = sep + 1;
+        while (!rest.empty() && (rest.back() == '\n' || rest.back() == '\r')) {
+            rest.pop_back();
+        }
+
+        std::string name = rest;
+        bool from_club_list = true;
+        if (const std::size_t origin_sep = rest.rfind('|'); origin_sep != std::string::npos) {
+            name = rest.substr(0, origin_sep);
+            from_club_list = rest.substr(origin_sep + 1) != kOriginLocal;
         }
         if (name.empty()) {
             continue;
@@ -29,6 +46,7 @@ std::vector<Player> FileRosterStore::load() {
         Player player{};
         player.id = static_cast<std::uint32_t>(std::strtoul(line, nullptr, 10));
         player.name = std::move(name);
+        player.from_club_list = from_club_list;
         players.push_back(std::move(player));
     }
     std::fclose(file);
@@ -42,8 +60,9 @@ bool FileRosterStore::save(const std::vector<Player>& players) {
     }
     bool ok = true;
     for (const Player& player : players) {
-        if (std::fprintf(file, "%lu|%s\n", static_cast<unsigned long>(player.id),
-                         player.name.c_str()) < 0) {
+        if (std::fprintf(file, "%lu|%s|%s\n", static_cast<unsigned long>(player.id),
+                         player.name.c_str(),
+                         player.from_club_list ? kOriginClub : kOriginLocal) < 0) {
             ok = false;
             break;
         }
@@ -52,6 +71,24 @@ bool FileRosterStore::save(const std::vector<Player>& players) {
     std::fflush(file);
     std::fclose(file);
     return ok;
+}
+
+std::optional<std::string> read_text_file(const std::string& path) {
+    std::FILE* file = std::fopen(path.c_str(), "r");
+    if (file == nullptr) {
+        return std::nullopt;
+    }
+    std::string text;
+    char chunk[256];
+    while (const std::size_t read = std::fread(chunk, 1, sizeof(chunk), file)) {
+        text.append(chunk, read);
+    }
+    const bool failed = std::ferror(file) != 0;
+    std::fclose(file);
+    if (failed) {
+        return std::nullopt;
+    }
+    return text;
 }
 
 bool FileResultsLog::append(const RoundResult& r) {

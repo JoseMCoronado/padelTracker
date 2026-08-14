@@ -1413,6 +1413,8 @@ Show:
 
 A match summary comes first (ADR-0017): the last point routes to a read-back screen — winner, the set board, duration, points won per side, longest run — whose single CONTINUE button leads here, or in a club round to the mix or the standings.
 
+`Review / correct` is gone (ADR-0022). This screen and every other one the flow reaches after a finished score instead carry `BACK - UNDO LAST POINT`, which takes the last point back and returns to the live screen; reviewing is what the summary before it is for.
+
 Future example:
 
 ```text

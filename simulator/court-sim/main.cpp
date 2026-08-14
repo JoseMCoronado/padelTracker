@@ -15,8 +15,10 @@
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -181,9 +183,25 @@ struct App {
     std::uint32_t acked_remote_undos = 0;
     std::vector<std::string> log_lines;
 
-    // Simulated court Li-ion (CITYORK 2000 mAh on the Waveshare PH2.0).
+    // Simulated court Li-ion (CITYORK 2000 mAh on the Waveshare PH2.0). The
+    // true level is fixed; the noise around it stands in for the rail swing
+    // the real ADC sees, so the filter is exercised without hardware.
     std::uint16_t battery_mv = 3900;
+    padel::battery::BatteryMonitor battery_monitor;
+    std::uint64_t last_battery_sample_ms = 0;
+    // Fixed-seed LCG: the jitter has to be reproducible or every screenshot
+    // run would land on a different percent.
+    std::uint32_t battery_noise_state = 0x9E3779B9u;
     std::uint8_t brightness_percent = 100;
+
+    // One noisy reading around the true level, +/-240 mV — the swing that made
+    // the unfiltered percent jump by ~29 points on hardware.
+    std::uint16_t noisy_battery_sample() {
+        battery_noise_state = battery_noise_state * 1664525u + 1013904223u;
+        const int offset = static_cast<int>((battery_noise_state >> 16) % 481u) - 240;
+        const int mv = static_cast<int>(battery_mv) + offset;
+        return static_cast<std::uint16_t>(std::clamp(mv, 2600, 4300));
+    }
 
     void log(const std::string& line) {
         std::printf("[sim] %s\n", line.c_str());
@@ -295,6 +313,27 @@ struct App {
         pairing->load_assignments();
     }
 
+    // Reconciles the roster with config/players.txt on every launch, so adding
+    // a regular means editing that file, not the code. Read failures are
+    // logged and ignored: apply_club_list refuses an empty list, so a bad path
+    // leaves whatever the roster file already held.
+    void apply_club_list() {
+        const char* env = std::getenv("PADEL_PLAYERS_FILE");
+        const std::string path = env != nullptr ? env : PADEL_CLUB_LIST_FILE;
+        const auto text = application::read_text_file(path);
+        if (!text) {
+            log("club list unreadable at " + path + " (roster left as it was)");
+            return;
+        }
+        const auto sync = roster->apply_club_list(application::parse_club_list(*text));
+        if (!sync.applied) {
+            log("club list at " + path + " has no names (roster left as it was)");
+            return;
+        }
+        log("club list: " + std::to_string(roster->players().size()) + " players (+" +
+            std::to_string(sync.added) + " -" + std::to_string(sync.removed) + ")");
+    }
+
     void boot() {
         std::filesystem::create_directories(kDataDir);
         court_settings = std::make_unique<FileSettings>(std::string(kDataDir) + "/pairings.txt");
@@ -305,6 +344,7 @@ struct App {
             roster_store = std::make_unique<application::FileRosterStore>(
                 std::string(kDataDir) + "/roster.txt");
             roster = std::make_unique<application::PlayerRoster>(*roster_store);
+            apply_club_list();
             results_log = std::make_unique<application::FileResultsLog>(
                 std::string(kDataDir) + "/club_results.csv");
             club = std::make_unique<application::ClubController>(*results_log, clock);
@@ -682,17 +722,19 @@ struct App {
         rows.push_back({"Board profile", "SDL 1024x600"});
         rows.push_back({"Court id", std::to_string(kCourtId)});
         rows.push_back({"Radio channel", "n/a (simulated)"});
-        const auto soc = padel::battery::mv_to_percent(battery_mv);
+        const auto soc = battery_monitor.percent();
         if (soc) {
             rows.push_back({"Battery", std::to_string(*soc) + "%"});
         } else {
             rows.push_back({"Battery", "unknown / no cell"});
         }
-        {
+        if (const auto smoothed = battery_monitor.smoothed_mv()) {
             char volt[16];
-            std::snprintf(volt, sizeof(volt), "%u.%02u V", battery_mv / 1000u,
-                          (battery_mv % 1000u) / 10u);
+            std::snprintf(volt, sizeof(volt), "%u.%02u V", *smoothed / 1000u,
+                          (*smoothed % 1000u) / 10u);
             rows.push_back({"Battery voltage", volt});
+        } else {
+            rows.push_back({"Battery voltage", "n/a"});
         }
         rows.push_back({"Est. runtime", padel::battery::format_runtime_estimate(soc)});
         rows.push_back({"Brightness", std::to_string(brightness_percent) + "%"});
@@ -766,10 +808,10 @@ struct App {
         prev_points_a = points_a;
         prev_points_b = points_b;
 
-        // Natural completion moves to the match complete screen (edge only,
-        // so REVIEW / CORRECT can go back to the live screen). In a club
-        // round the finished mini-set feeds the controller instead, and the
-        // flow continues on the mix or standings screen.
+        // Natural completion opens the summary screen, on the completion edge
+        // only so a screen the flow has already moved past is never yanked
+        // back. In a club round the finished mini-set feeds the controller
+        // first, and the flow continues on the mix or standings screen.
         //
         // Milestone cues, loudest thing first: a point that ends the match says
         // only that, and one that ends a set says only that, never both.
@@ -810,11 +852,25 @@ struct App {
         prev_completed_sets = completed_sets;
         prev_games_in_set = games_in_set;
 
+        // Same 5 s cadence as the court unit. The first sample is clean so the
+        // panel opens on the true level; the noise after it shows the filter
+        // absorbing swings rather than the seed.
+        if (last_battery_sample_ms == 0 || now - last_battery_sample_ms >= 5000) {
+            battery_monitor.add_sample(last_battery_sample_ms == 0 ? battery_mv
+                                                                  : noisy_battery_sample());
+            last_battery_sample_ms = now;
+        }
+
         // Assemble the frame model.
         model.settings = settings;
         model.live = ui::build_live_model(*service, settings, now);
         model.live.brightness_percent = brightness_percent;
-        model.live.battery_percent = padel::battery::mv_to_percent(battery_mv);
+        model.live.battery_percent = battery_monitor.percent();
+        model.live.battery_low = battery_monitor.low();
+        model.live.battery_runtime =
+            battery_monitor.percent()
+                ? padel::battery::format_runtime_estimate(battery_monitor.percent())
+                : std::string{};
         if (now < flash_until_ms) {
             model.live.point_flash = flash_team;
         }
@@ -912,9 +968,18 @@ int run_tour(App& app, const std::string& out_dir) {
     long_b.serving = false;
     long_b.remote_ok = false;
 
+    // Setup and the live header both carry the battery readout, so it is set
+    // before the first shot rather than alongside the live screen.
+    const auto set_battery = [&m](std::uint8_t percent, bool low) {
+        m.live.battery_percent = percent;
+        m.live.battery_low = low;
+        m.live.battery_runtime = padel::battery::format_runtime_estimate(percent);
+    };
+
     m.screen = ui::Screen::Setup;
     m.live.team_a = long_a;
     m.live.team_b = long_b;
+    set_battery(79, false);
     app.court_ui.render(m);
     if (!settle_and_shoot("01-setup")) return 1;
 
@@ -951,8 +1016,12 @@ int run_tour(App& app, const std::string& out_dir) {
     m.live.status_label = "PAUSED";
     m.live.storage_fault = true;
     m.live.radio_ok = false;
+    // The stress shot also carries the warning state: BAT LOW keeps the
+    // runtime beside it, which is when knowing the minutes left matters.
+    set_battery(12, true);
     app.court_ui.render(m);
     if (!settle_and_shoot("04-live-tiebreak-paused-faults")) return 1;
+    set_battery(79, false);  // later shots are not about a flat battery
 
     m.screen = ui::Screen::MatchComplete;
     m.complete.winner_label = "LOS GUERREROS DEL PADEL WIN";

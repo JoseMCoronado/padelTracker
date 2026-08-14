@@ -96,8 +96,22 @@ void SetupScreen::create(Shared* shared_state) {
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(root, tokens::kSpaceS, 0);
 
-    lv_obj_t* title = make_label(root, tokens::font_large(), tokens::text());
+    // The battery sits opposite the heading rather than on a row of its own:
+    // this screen already has to fit its bottom bar on 600 px, so the readout
+    // has to cost no height. Same place the live header keeps it.
+    lv_obj_t* title_row = lv_obj_create(root);
+    lv_obj_set_size(title_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(title_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(title_row, 0, 0);
+    lv_obj_set_style_pad_all(title_row, 0, 0);
+    lv_obj_set_flex_flow(title_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(title_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = make_label(title_row, tokens::font_large(), tokens::text());
     lv_label_set_text(title, "MATCH SETUP");
+    battery = make_battery_readout(title_row);
 
     lv_obj_t* form = make_panel(root);
     lv_obj_set_size(form, LV_PCT(100), LV_SIZE_CONTENT);
@@ -292,6 +306,8 @@ void SetupScreen::update(const MatchSettings& settings, const LiveViewModel& liv
     };
     remote_status(remote_a_status, unpair_a_button, live.team_a);
     remote_status(remote_b_status, unpair_b_button, live.team_b);
+
+    update_battery_readout(battery, live);
 
     update_club(club);
 }

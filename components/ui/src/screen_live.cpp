@@ -231,8 +231,7 @@ void LiveScreen::create(Shared* shared_state) {
     storage_label = make_label(header, tokens::font_body(), tokens::error());
     lv_label_set_text(storage_label, LV_SYMBOL_WARNING " STORAGE");
     lv_obj_add_flag(storage_label, LV_OBJ_FLAG_HIDDEN);
-    battery_label = make_label(header, tokens::font_body(), tokens::text_muted());
-    lv_label_set_text(battery_label, "BAT --");
+    battery = make_battery_readout(header);
     radio_label = make_label(header, tokens::font_body(), tokens::success());
 
     // --- Conflict banner (hidden unless a conflict is pending). Floating
@@ -476,20 +475,7 @@ void LiveScreen::update(const LiveViewModel& m) {
     set_text(radio_label, m.radio_ok ? "RADIO: OK" : "RADIO: CHECK");
     lv_obj_set_style_text_color(radio_label, m.radio_ok ? tokens::success() : tokens::warning(), 0);
 
-    if (m.battery_percent) {
-        if (*m.battery_percent <= 15) {
-            set_text(battery_label, "BAT LOW");
-            lv_obj_set_style_text_color(battery_label, tokens::warning(), 0);
-        } else {
-            char buf[16];
-            std::snprintf(buf, sizeof(buf), "BAT %u%%", *m.battery_percent);
-            set_text(battery_label, buf);
-            lv_obj_set_style_text_color(battery_label, tokens::success(), 0);
-        }
-    } else {
-        set_text(battery_label, "BAT --");
-        lv_obj_set_style_text_color(battery_label, tokens::text_muted(), 0);
-    }
+    update_battery_readout(battery, m);
 
     if (brightness_slider != nullptr &&
         !lv_obj_has_state(brightness_slider, LV_STATE_PRESSED)) {

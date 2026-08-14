@@ -27,6 +27,20 @@ lv_obj_t* centered_column(lv_obj_t* parent) {
     return column;
 }
 
+lv_obj_t* button_row(lv_obj_t* parent) {
+    lv_obj_t* buttons = lv_obj_create(parent);
+    lv_obj_set_size(buttons, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(buttons, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(buttons, 0, 0);
+    lv_obj_set_style_pad_all(buttons, 0, 0);
+    lv_obj_set_style_pad_column(buttons, tokens::kSpaceM, 0);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
+    return buttons;
+}
+
 }  // namespace
 
 // --- Match summary --------------------------------------------------------------
@@ -35,7 +49,9 @@ void SummaryScreen::create(Shared* shared_state) {
     shared = shared_state;
     root = make_screen_root();
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(root, tokens::kSpaceM, 0);
+    // The densest screen in the UI: a five-set board, five stat rows and two
+    // buttons only fit between the banner and the bottom edge on tight gaps.
+    lv_obj_set_style_pad_row(root, tokens::kSpaceS, 0);
     lv_obj_set_flex_align(root, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
@@ -45,7 +61,7 @@ void SummaryScreen::create(Shared* shared_state) {
     lv_obj_set_width(winner_label, LV_PCT(100));
     lv_obj_set_style_text_align(winner_label, LV_TEXT_ALIGN_CENTER, 0);
 
-    scoreboard.create(root, 56, tokens::font_large(), tokens::font_large());
+    scoreboard.create(root, 48, tokens::font_large(), tokens::font_large());
 
     lv_obj_t* stats_panel = make_panel(root);
     lv_obj_set_size(stats_panel, 640, LV_SIZE_CONTENT);
@@ -70,8 +86,10 @@ void SummaryScreen::create(Shared* shared_state) {
         stat.value = make_label(stat.panel, tokens::font_heading(), tokens::text());
     }
 
+    lv_obj_t* buttons = button_row(root);
+    add_back_undo_button(buttons, this);
     lv_obj_t* button = make_button(
-        root, "CONTINUE", tokens::kOrganizerTarget,
+        buttons, "CONTINUE", tokens::kOrganizerTarget,
         [](lv_event_t* e) {
             auto* s = self<SummaryScreen>(e);
             if (s->shared->callbacks.summary_continue) s->shared->callbacks.summary_continue();
@@ -114,31 +132,20 @@ void CompleteScreen::create(Shared* shared_state) {
     score_label = make_label(column, tokens::font_large(), tokens::text());
     duration_label = make_label(column, tokens::font_body(), tokens::text_muted());
 
-    lv_obj_t* buttons = lv_obj_create(column);
-    lv_obj_set_size(buttons, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(buttons, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(buttons, 0, 0);
-    lv_obj_set_style_pad_all(buttons, 0, 0);
-    lv_obj_set_style_pad_column(buttons, tokens::kSpaceM, 0);
-    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
-
-    make_button(
+    // Spec 14.8 also lists a "Review / correct" button here, which only moved
+    // to the live screen and left the score alone. BACK reaches the same screen
+    // and is the reason anyone went there; reviewing is what the summary before
+    // this one is for (ADR-0022).
+    lv_obj_t* buttons = button_row(column);
+    add_back_undo_button(buttons, this);
+    lv_obj_t* next = make_button(
         buttons, "NEW MATCH", tokens::kOrganizerTarget,
         [](lv_event_t* e) {
             auto* s = self<CompleteScreen>(e);
             if (s->shared->callbacks.new_match) s->shared->callbacks.new_match();
         },
         this);
-    make_button(
-        buttons, "REVIEW / CORRECT", tokens::kOrganizerTarget,
-        [](lv_event_t* e) {
-            auto* s = self<CompleteScreen>(e);
-            if (s->shared->callbacks.show_screen) s->shared->callbacks.show_screen(Screen::Live);
-        },
-        this);
+    lv_obj_set_style_bg_color(next, tokens::success(), 0);
 
     lv_obj_t* future = make_label(column, tokens::font_small(), tokens::text_muted());
     lv_label_set_text(future, "Next assignments will appear here (multi-court, future)");
@@ -165,17 +172,7 @@ void PairingScreen::create(Shared* shared_state) {
     candidate_label = make_label(column, tokens::font_large(), tokens::warning());
     countdown_label = make_label(column, tokens::font_body(), tokens::text_muted());
 
-    lv_obj_t* buttons = lv_obj_create(column);
-    lv_obj_set_size(buttons, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(buttons, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(buttons, 0, 0);
-    lv_obj_set_style_pad_all(buttons, 0, 0);
-    lv_obj_set_style_pad_column(buttons, tokens::kSpaceM, 0);
-    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
-
+    lv_obj_t* buttons = button_row(column);
     confirm_button = make_button(
         buttons, "CONFIRM", tokens::kOrganizerTarget,
         [](lv_event_t* e) {
@@ -303,17 +300,7 @@ void RecoveryScreen::create(Shared* shared_state) {
     lv_label_set_long_mode(detail_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(detail_label, LV_PCT(100));
 
-    lv_obj_t* buttons = lv_obj_create(column);
-    lv_obj_set_size(buttons, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(buttons, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(buttons, 0, 0);
-    lv_obj_set_style_pad_all(buttons, 0, 0);
-    lv_obj_set_style_pad_column(buttons, tokens::kSpaceM, 0);
-    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
-
+    lv_obj_t* buttons = button_row(column);
     lv_obj_t* resume = make_button(
         buttons, "RESUME MATCH", tokens::kOrganizerTarget,
         [](lv_event_t* e) {

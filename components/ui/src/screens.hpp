@@ -9,6 +9,7 @@
 #include "lvgl.h"
 #include "padel/ui/court_ui.hpp"
 #include "padel/ui/model.hpp"
+#include "padel/ui/tokens.hpp"
 
 namespace padel::ui::internal {
 
@@ -23,6 +24,49 @@ lv_obj_t* make_panel(lv_obj_t* parent);
 lv_obj_t* make_label(lv_obj_t* parent, const lv_font_t* font, lv_color_t color);
 lv_obj_t* make_button(lv_obj_t* parent, const char* text, lv_coord_t min_height,
                       lv_event_cb_t handler, void* user_data);
+
+// --- Battery readout ----------------------------------------------------------
+
+// "BAT 79%  ~3h 19m": the percent, with the runtime estimate as a smaller,
+// dimmer suffix. The two labels live in their own row container because the
+// headers that host it use SPACE_BETWEEN, which would otherwise fling the
+// runtime into a slot of its own instead of keeping it next to the percent.
+//
+// Shared by the live header and match setup so the organizer reads the same
+// thing before and during a match.
+struct BatteryReadout {
+    lv_obj_t* group = nullptr;
+    lv_obj_t* percent = nullptr;
+    lv_obj_t* runtime = nullptr;
+};
+
+BatteryReadout make_battery_readout(lv_obj_t* parent);
+
+// Reads battery_percent / battery_low / battery_runtime. The percent is
+// already filtered and the warning already latched upstream; this only
+// decides wording and color.
+void update_battery_readout(const BatteryReadout& readout, const LiveViewModel& model);
+
+// --- Post-match BACK ----------------------------------------------------------
+
+// Every screen the flow reaches after a match or club mini-set finishes carries
+// this button, so a completed score is never a dead end: the domain lets an
+// undo through a completed match (ADR-0004) and the host walks the flow back to
+// the live board from there. The label spells the effect out because on the mix
+// screen a bare "BACK" reads as "back to the summary" rather than "take the
+// last point back".
+inline constexpr const char* kBackUndoLabel = LV_SYMBOL_LEFT " BACK - UNDO LAST POINT";
+
+template <typename ScreenT>
+lv_obj_t* add_back_undo_button(lv_obj_t* parent, ScreenT* screen) {
+    return make_button(
+        parent, kBackUndoLabel, tokens::kOrganizerTarget,
+        [](lv_event_t* e) {
+            auto* s = static_cast<ScreenT*>(lv_event_get_user_data(e));
+            if (s->shared->callbacks.undo_confirmed) s->shared->callbacks.undo_confirmed();
+        },
+        screen);
+}
 
 // --- Modal confirmation dialog -------------------------------------------------
 
@@ -105,7 +149,7 @@ struct LiveScreen {
     lv_obj_t* mode_label = nullptr;
     lv_obj_t* status_label = nullptr;
     lv_obj_t* radio_label = nullptr;
-    lv_obj_t* battery_label = nullptr;
+    BatteryReadout battery{};
     lv_obj_t* storage_label = nullptr;
 
     struct TeamPanel {
@@ -161,6 +205,7 @@ struct SetupScreen {
     lv_obj_t* team_b_field = nullptr;
     lv_obj_t* preset_dropdown = nullptr;
     lv_obj_t* server_dropdown = nullptr;
+    BatteryReadout battery{};
     lv_obj_t* remote_a_status = nullptr;
     lv_obj_t* remote_b_status = nullptr;
     // Shown only while that team has a remote in the allow-list.

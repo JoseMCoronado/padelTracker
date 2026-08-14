@@ -268,8 +268,9 @@ Decision: Keep the match engine untouched. `domain::ClubRound` is pure
 logic over player slots 0..3: pairings (set 1 = picks, set 2 = winners
 split and each takes a loser), standings, Top 2 / Bottom 2, and a
 deterministic coin flip from an injected seed. Names live in
-`application::PlayerRoster` (file-backed store, seeded on first run;
-guests are minted per session with sentinel ids and never persisted).
+`application::PlayerRoster` (file-backed store, filled from the checked-in club
+list — ADR-0023 replaced the built-in seed roll; guests are minted per session
+with sentinel ids and never persisted).
 `application::ClubController` maps players to slots, runs each mini-set as
 a normal journaled match (club preset), consumes the completed
 `MatchState`, and remembers the round's Top 2 as the forbidden pair for
@@ -593,10 +594,51 @@ Drive brightness from the Live ORGANIZER menu (slider 10–100%). Register
 ~30 and low percent → ~240; never write ≥ 248. The blank screen on first
 enable was 100% incorrectly mapped to duty 247. Persist percent in NVS.
 
+**Amended: one raw sample is not a battery level.** Mapping a single
+instantaneous ADC read straight to a percentage put a number on the
+scoreboard that jumped between 79% and 50% between reads. Three things
+compounded: the OCV curve is 8 mV per point between 3.9 V and 3.7 V and one
+ADC count is already ~9.7 mV, the reading is taken under load while the
+curve describes open circuit, and the backlight boost, panel refresh and
+radio bursts all sag the rail while a 5 s sample lands at a random phase of
+them. A failed read of a bus shared with the touch controller also flipped
+the label to `BAT --` for a cycle.
+
+Measurement is now a pipeline, not a read:
+
+- **Median of a burst.** Nine reads ~2 ms apart, collapsed to the median, so
+  one corrupt I2C transfer cannot move the result and the sample averages
+  over switching phases instead of catching one.
+- **Filtered in millivolts, not percent.** `BatteryMonitor` in portable
+  `padel/common/battery.hpp` gates samples more than 300 mV from its running
+  estimate as bad reads, then feeds the rest through a 1/8-weight average
+  (~40 s at the 5 s cadence).
+- **Slew-limited display.** The shown percent moves at most one point per
+  sample, in both directions, so charging on USB stays visible.
+- **Bad reads hold, they do not blank.** The last good value stands for six
+  consecutive failures (~30 s) before going unknown, and the first good
+  sample seeds the filter outright rather than ramping from zero.
+- **Hysteresis on the warning.** `BAT LOW` latches at 15% and clears only at
+  20%, so it cannot flicker on the threshold.
+
+The runtime estimate also moves from Diagnostics-only to a shared readout
+(`BAT 79%  ~3h 19m`, the runtime a smaller muted suffix) on both the Live
+header and Match Setup — the question "will this last the round?" is asked
+before a match starts, not only mid-game. It is kept beside `BAT LOW`, where
+minutes remaining matter most. On setup it shares the title row rather than
+taking one of its own, because that screen already has to fit its bottom bar
+on 600 px. The estimate only reads as stable because the percent feeding it
+is; derived from the raw value it swung by hours. Diagnostics keeps the
+smoothed voltage and adds the raw burst spread (median, min, max) so the real
+noise can be measured on hardware.
+
 Consequences: Court battery UI is independent of remote `battery_mv`
 (still protocol-ready, measurement not implemented). Runtime is only as
-good as the draw assumption. Brightness control is mid-match and NVS-
-sticky across reboot.
+good as the draw assumption, and it is now in front of organizers rather
+than buried in Diagnostics, which raises the stakes on measuring the real
+draw. The percent trades responsiveness for stability: a genuine cliff takes
+tens of seconds to show. Brightness control is mid-match and NVS-sticky
+across reboot.
 
 ## ADR-0020: Two-stage idle backlight dim, and the waking tap never scores
 
@@ -683,3 +725,112 @@ whose first names start alike read the same on the board, and the fix is a
 nickname in the roster rather than a wider plate. An undo that reopens a
 mini-set drops its block, since the strip is projected from the round rather
 than accumulated.
+
+## ADR-0022: No post-match screen is a dead end
+
+Status: Accepted
+
+Context: The second session on court got stuck twice. A club mini-set ended
+on a point that should not have counted, the mix screen came up announcing
+the reshuffled teams, and the only thing on it was START SET 2. The same
+thing happened when a match ended: summary, then the complete screen, with
+no way to put the last point back. Every layer below the UI was already
+willing - `decide(UndoLastScoringAction)` has no lifecycle check where
+`decide(AwardPoint)` rejects a completed match (ADR-0004), the service only
+guards undo on the conflict window, and both hosts already walk the flow
+back to the live board when an undo reopens a finished match (ADR-0017).
+The one thing missing was a touch target: the only on-screen UNDO lived in
+the live screen's organizer menu, so from a post-match screen the score
+could be corrected only by holding a remote (ADR-0014), which nobody
+reaches for when the remotes are already off the wrist.
+
+Decision: Every screen the flow can reach with a finished score on the board
+- summary, club mix, club standings, complete - carries the same button,
+wired to the same `undo_confirmed` callback the organizer menu uses. The
+label spells the effect out, "BACK - UNDO LAST POINT", because on the mix
+screen a bare "BACK" reads as "back to the summary". It acts on a single
+tap rather than behind a confirmation: the action is one point, and the way
+to undo the undo is to award the point again on the board it returns to.
+
+No host change was needed, which is the point of the decision - the hosts
+already treat "lifecycle left Completed while a post-match screen is up" as
+"walk back to Live, rewinding the club round with it". The mix screen's
+button matters most in a club round: START SET 2 archives set 1's journal
+(ADR-0013), so it is the last moment set 1 can be reopened. On the standings
+screen it is the only route left that does not close the round, since both
+NEW ROUND and DONE append to the results log.
+
+The complete screen's "REVIEW / CORRECT" goes away with it, a departure from
+the element list in spec 14.8. It only called `show_screen(Live)`: it reviewed
+nothing the summary had not already shown and corrected nothing by itself,
+and next to BACK it was a second button leading to the same screen, one of
+which silently changes the score. Reaching the live board without rewinding a
+point is no longer possible from there, which costs nothing - the reason to
+go was always to fix the score.
+
+Consequences: The summary screen now carries two buttons where it carried
+one, and it was already the densest screen in the UI - under worst-case
+content (a five-set board, five stat rows, pair names too long for the
+plates) it overflowed the bottom edge by ~34 px before anything was added.
+Its row gaps dropped to 8 px and its scoreboard rows from 56 to 48 px, which
+buys 24 px of slack top and bottom; a render test now pins all four buttons
+inside the screen and checks that a tap on each one fires the undo. Going
+back after START SET 2 is still not possible, and would mean restoring an
+archived journal.
+
+## ADR-0023: One checked-in file is the club list
+
+Status: Accepted
+
+Context: Five regulars needed adding to the picker, and there was no good way
+to do it. The names lived in a `kSeedNames` array in `roster.cpp`, consulted
+only when the roster store came up empty, so editing it did nothing on any
+machine that had already run - the roster file existed, and the seed was
+skipped. On the desktop that file is `court-sim-data/roster.txt`, which is
+gitignored, so hand-editing it fixed one laptop and travelled nowhere. On the
+court unit it is `/littlefs/roster.txt`, reachable only by erasing flash, which
+takes the journal with it. The one mechanism that actually worked was typing
+each name into NEW PLAYER on the touchscreen, once per unit.
+
+Decision: `config/players.txt` is the club list: one name per line, `#`
+comments, blank lines and stray spaces ignored, repeats collapsed
+case-insensitively. It is the only place the names live - `kSeedNames` is gone,
+and a `PlayerRoster` with an empty store now comes up empty rather than
+inventing a club. Both hosts call `apply_club_list()` at boot. The simulator
+reads the file from the source tree through a path baked in by CMake (so it
+works from any working directory, and `PADEL_PLAYERS_FILE` overrides it),
+picking up edits on the next launch with no rebuild. The court display embeds
+the same file with `EMBED_TXTFILES`, so it travels inside the binary and
+arrives on the next flash - no LittleFS provisioning step, and nothing that
+could disturb the journal sharing that partition.
+
+Not JSON, which is what was first asked for. `components/` compiles natively
+with no ESP-IDF dependency, and the tree has no JSON parser; ESP-IDF bundles
+cJSON but the native build cannot see it, so JSON meant vendoring a parser to
+read a list of names. It would also fail worse: one stray comma rejects the
+whole file, where a bad line here is skipped and the rest of the club still
+turns up.
+
+The list is authoritative over its own entries - dropping a name drops the
+player - which needs one distinction to be safe. Players are marked `club` or
+`local` in the roster file, and a sync only removes `club` ones. Without that,
+a walk-up typed in courtside would vanish on the next boot for the crime of
+not being in a file nobody had edited. A name appearing in the list adopts a
+player who was typed in first, so they stop being an exception and can later be
+removed like anyone else. Ids are never reused and never change for a player
+who stays listed, because `club_results.csv` rows point at them.
+
+An empty list is ignored rather than obeyed, in `apply_club_list` itself rather
+than at each call site. A missing file, an unreadable one and a truncated one
+all arrive as "no names", and obeying that reading would delete every member of
+the club.
+
+Consequences: Adding a regular is now editing one file, and the answer to
+"where does the roster come from" is one path instead of an array plus two
+files that shadow it. The court unit still needs a reflash to pick up an edit -
+acceptable while the display is the thing being iterated on, and the file is
+already in the flash image if that changes. Nothing reconciles two units
+against each other, so a player added courtside on one court is unknown to the
+other until they reach the list. Tests that used to lean on the built-in seed
+now declare their own regulars, which is why the club round tests no longer
+break when a Tuesday roll-call changes.

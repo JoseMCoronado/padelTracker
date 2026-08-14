@@ -41,6 +41,13 @@ public:
     bool save(const std::vector<Player>&) override { return true; }
 };
 
+// The regulars these tests pick from; the real list is config/players.txt.
+const std::vector<std::string>& regulars() {
+    static const std::vector<std::string> names = {"Adrien", "Lewis", "Louis", "Luigi",
+                                                   "Jose",   "Zoe",   "Paulina"};
+    return names;
+}
+
 class NullResultsLog : public application::IResultsLog {
 public:
     bool append(const application::RoundResult&) override { return true; }
@@ -62,11 +69,12 @@ TEST_CASE("club model: roster tiles, mix labels, standings, coin row") {
     MemoryRosterStore store;
     NullResultsLog log;
     FakeClock clock;
-    PlayerRoster roster(store);  // seeds the club regulars
+    PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     ui::ClubViewModel idle = ui::build_club_model(roster, controller, "split them up");
-    REQUIRE(idle.roster.size() == 12);
+    REQUIRE(idle.roster.size() == roster.players().size());
     CHECK(idle.setup_hint == "split them up");
     CHECK(idle.mix_team_a.empty());
     CHECK(idle.standings.empty());
@@ -134,6 +142,7 @@ TEST_CASE("club prior boards keep each mini-set with the pairing that played it"
     NullResultsLog log;
     FakeClock clock;
     PlayerRoster roster(store);
+    roster.apply_club_list(regulars());
     ClubController controller(log, clock);
 
     const auto find = [&](const char* name) {

@@ -29,8 +29,22 @@ void set_backlight(bool on);
 // expander is not ready or the read fails.
 std::optional<std::uint16_t> read_battery_raw();
 
-// Battery millivolts via the onboard 3:1 divider (raw * 9900 / 1023).
-// Empty when the ADC read fails.
+// One burst of ADC reads collapsed to a median. min/max report how far the
+// rail moved across the burst, which is what makes any single sample
+// untrustworthy; Diagnostics shows it so the noise can be measured in place.
+struct BatterySample {
+    std::optional<std::uint16_t> mv{};  // median of the successful reads
+    std::uint16_t min_mv = 0;
+    std::uint16_t max_mv = 0;
+    std::uint8_t valid_count = 0;
+};
+
+// Samples the ADC repeatedly, ~2 ms apart, so the result averages over
+// backlight-boost and panel-refresh phases instead of catching one of them.
+BatterySample read_battery_burst();
+
+// Battery millivolts via the onboard 3:1 divider (raw * 9900 / 1023),
+// median of a burst. Empty when every read in the burst failed.
 std::optional<std::uint16_t> read_battery_mv();
 
 // Percent 0–100. PWM on register 0x05 is INVERTED (higher duty = dimmer);

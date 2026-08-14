@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include "padel/ui/tokens.hpp"
@@ -60,6 +61,55 @@ lv_obj_t* make_button(lv_obj_t* parent, const char* text, lv_coord_t min_height,
     lv_label_set_text(label, text);
     lv_obj_center(label);
     return button;
+}
+
+// --- Battery readout ----------------------------------------------------------
+
+BatteryReadout make_battery_readout(lv_obj_t* parent) {
+    BatteryReadout readout{};
+    readout.group = lv_obj_create(parent);
+    lv_obj_set_size(readout.group, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(readout.group, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(readout.group, 0, 0);
+    lv_obj_set_style_pad_all(readout.group, 0, 0);
+    lv_obj_set_style_pad_column(readout.group, tokens::kSpaceXs, 0);
+    lv_obj_set_flex_flow(readout.group, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(readout.group, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(readout.group, LV_OBJ_FLAG_SCROLLABLE);
+
+    readout.percent = make_label(readout.group, tokens::font_body(), tokens::text_muted());
+    lv_label_set_text(readout.percent, "BAT --");
+    // Smaller and dimmer than the percent: useful at a glance, never competing
+    // with the score. Hidden until there is a cell to estimate for.
+    readout.runtime = make_label(readout.group, tokens::font_small(), tokens::text_muted());
+    lv_obj_add_flag(readout.runtime, LV_OBJ_FLAG_HIDDEN);
+    return readout;
+}
+
+void update_battery_readout(const BatteryReadout& readout, const LiveViewModel& model) {
+    if (model.battery_percent) {
+        if (model.battery_low) {
+            set_text(readout.percent, "BAT LOW");
+            lv_obj_set_style_text_color(readout.percent, tokens::warning(), 0);
+        } else {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "BAT %u%%", *model.battery_percent);
+            set_text(readout.percent, buf);
+            lv_obj_set_style_text_color(readout.percent, tokens::success(), 0);
+        }
+    } else {
+        set_text(readout.percent, "BAT --");
+        lv_obj_set_style_text_color(readout.percent, tokens::text_muted(), 0);
+    }
+
+    // Runtime stays on next to BAT LOW: that is exactly when it matters most.
+    if (model.battery_runtime.empty()) {
+        lv_obj_add_flag(readout.runtime, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        set_text(readout.runtime, model.battery_runtime);
+        lv_obj_clear_flag(readout.runtime, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // --- Modal confirmation dialog -------------------------------------------------

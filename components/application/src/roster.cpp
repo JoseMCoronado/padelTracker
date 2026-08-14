@@ -6,10 +6,6 @@
 namespace padel::application {
 namespace {
 
-const char* const kSeedNames[] = {"Jose",   "Zoe",     "William", "Szewei",
-                                   "Ruxandra", "Lewis", "Luigi",   "Raymond",
-                                   "Paulina", "Vineet", "Louis",   "Adrien"};
-
 std::string trimmed(const std::string& text) {
     std::size_t begin = 0;
     std::size_t end = text.size();
@@ -37,18 +33,92 @@ void sort_by_name(std::vector<Player>& players) {
 
 }  // namespace
 
+std::vector<std::string> parse_club_list(const std::string& text) {
+    std::vector<std::string> names;
+    std::size_t line_begin = 0;
+    while (line_begin <= text.size()) {
+        std::size_t line_end = text.find('\n', line_begin);
+        if (line_end == std::string::npos) {
+            line_end = text.size();
+        }
+        std::string line = text.substr(line_begin, line_end - line_begin);
+        line_begin = line_end + 1;
+
+        if (const std::size_t comment = line.find('#'); comment != std::string::npos) {
+            line.erase(comment);
+        }
+        const std::string name = trimmed(line);
+        if (name.empty()) {
+            continue;
+        }
+        const std::string key = lowered(name);
+        const bool seen = std::any_of(names.begin(), names.end(), [&](const std::string& other) {
+            return lowered(other) == key;
+        });
+        if (!seen) {
+            names.push_back(name);
+        }
+        if (line_end == text.size()) {
+            break;
+        }
+    }
+    return names;
+}
+
 PlayerRoster::PlayerRoster(IRosterStore& store) : store_(store) {
     players_ = store_.load();
-    if (players_.empty()) {
-        for (const char* name : kSeedNames) {
-            players_.push_back(Player{next_id_++, name, false});
-        }
-        store_.save(players_);
-    }
     for (const Player& player : players_) {
         next_id_ = std::max(next_id_, player.id + 1);
     }
     sort_by_name(players_);
+}
+
+ClubListSync PlayerRoster::apply_club_list(const std::vector<std::string>& names) {
+    ClubListSync sync{};
+    if (names.empty()) {
+        return sync;  // "no file" must never read as "no club"
+    }
+    sync.applied = true;
+
+    const auto listed = [&names](const std::string& name) {
+        const std::string key = lowered(name);
+        return std::any_of(names.begin(), names.end(), [&key](const std::string& other) {
+            return lowered(other) == key;
+        });
+    };
+
+    bool changed = false;
+    for (const std::string& name : names) {
+        const std::string key = lowered(name);
+        const auto existing = std::find_if(players_.begin(), players_.end(),
+                                           [&key](const Player& player) {
+                                               return lowered(player.name) == key;
+                                           });
+        if (existing == players_.end()) {
+            players_.push_back(Player{next_id_++, name, false, true});
+            ++sync.added;
+            changed = true;
+        } else if (!existing->from_club_list) {
+            // Typed in courtside first, on the list now: the list owns them.
+            existing->from_club_list = true;
+            changed = true;
+        }
+    }
+
+    const std::size_t before = players_.size();
+    players_.erase(std::remove_if(players_.begin(), players_.end(),
+                                  [&listed](const Player& player) {
+                                      return player.from_club_list && !listed(player.name);
+                                  }),
+                   players_.end());
+    sync.removed = static_cast<int>(before - players_.size());
+    changed = changed || sync.removed > 0;
+
+    if (changed) {
+        sort_by_name(players_);
+        store_.save(players_);
+    }
+    return sync;
 }
 
 std::vector<Player> PlayerRoster::filtered(const std::string& query) const {
@@ -76,7 +146,7 @@ std::optional<Player> PlayerRoster::add_player(const std::string& name) {
             return std::nullopt;  // duplicate
         }
     }
-    const Player player{next_id_++, clean, false};
+    const Player player{next_id_++, clean, false, false};
     players_.push_back(player);
     sort_by_name(players_);
     store_.save(players_);
@@ -87,7 +157,8 @@ Player PlayerRoster::make_guest() {
     // Guest ids live above the member range and are session-scoped.
     const std::uint32_t guest_number = static_cast<std::uint32_t>(guests_.size()) + 1;
     Player guest{0x80000000u + guest_number,
-                 guest_number == 1 ? "GUEST" : "GUEST " + std::to_string(guest_number), true};
+                 guest_number == 1 ? "GUEST" : "GUEST " + std::to_string(guest_number), true,
+                 false};
     guests_.push_back(guest);
     return guest;
 }

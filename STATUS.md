@@ -7,6 +7,9 @@ COMPLETE (native + firmware builds; hardware verification pending)
 First on-court session played 2026-08-10; the five fixes it produced (button
 sensitivity, faster global undo, broadcast scoreboard, match summary, club mix
 barred pairs) are in — see "From the first court session" below
+Second session added two: a post-match screen is no longer a dead end, every one
+of them carries BACK - UNDO LAST POINT (ADR-0022), and the club list moved out
+of the code into `config/players.txt` (ADR-0023)
 Next: reflash both units and replay the session
 
 # Working
@@ -15,7 +18,9 @@ Next: reflash both units and replay the session
   match tiebreak, club mini-set preset) — `components/domain`
 - Undo via compensating events + journal replay, across all boundaries;
   always takes back the match's last point whoever scored it, and undoing a
-  match-winning point reopens the match and the club mini-set with it
+  match-winning point reopens the match and the club mini-set with it. Every
+  screen the flow reaches after a finished score carries BACK - UNDO LAST
+  POINT, so it does not take a remote to correct one (ADR-0022)
 - Protocol: POINT_INTENT/ACK + PAIR_REQUEST/PAIR_ASSIGN with CRC16, golden
   vectors, wrap-safe deduplicator — `components/protocol`
 - Application layer — `components/application`: CourtService single entry
@@ -63,13 +68,17 @@ Next: reflash both units and replay the session
 - Club round (ADR-0013): `domain::ClubRound` (first-to-3 x2, winners-split
   mix, wins + differential standings, Top2/Bottom2, automatic announced
   coin flip on ties) validated against the rotation sheets;
-  `PlayerRoster` (seeded Jose/Zoe/William/Szewei/Ruxandra +
-  Lewis/Luigi/Raymond/Paulina/Vineet/Louis/Adrien, add players
-  on device, session guests) + CSV results log written when the round is
-  closed; touch player picker (search, tiles, NEW PLAYER, ADD GUEST,
-  double-tap crowns), mix + standings screens; wired into both court-sim and
-  court-display, with up to two barred pairs kept apart in the picks and in
-  the set-2 mix
+  `PlayerRoster` (17 regulars from `config/players.txt`, add players on device,
+  session guests) + CSV results log written when the round is closed; touch
+  player picker (search, tiles, NEW PLAYER, ADD GUEST, double-tap crowns), mix
+  + standings screens; wired into both court-sim and court-display, with up to
+  two barred pairs kept apart in the picks and in the set-2 mix
+- The club list is one checked-in file, `config/players.txt` (ADR-0023): read
+  from the source tree by court-sim (no rebuild), embedded in the court-display
+  binary (lands on the next flash). It is authoritative for the names in it, so
+  deleting a line removes that player, while anyone added courtside with NEW
+  PLAYER is marked `local` in the roster file and survives every sync. An
+  unreadable or nameless list leaves the roster untouched
 - `firmware/remote` (XIAO ESP32-C3): remote_core + ESP-NOW + button + LED +
   NVS — builds clean for esp32c3. Fixed on hardware 2026-08-05: the main
   loop's `vTaskDelay(pdMS_TO_TICKS(5))` rounded to zero ticks at the default
@@ -93,7 +102,7 @@ Next: reflash both units and replay the session
   (button GPIO4 / lamp GPIO16 = button 1 of the bench harness), so a DevKit
   plus one arcade button is a stand-in clicker; the tracked c3 sdkconfig is
   untouched
-- 223 native tests passing (domain, protocol, application, persistence,
+- 254 native tests passing (domain, protocol, application, persistence,
   integration, remote, ui, common, sound)
 - ESP-IDF v5.4.4; all three firmware projects build
 
@@ -113,6 +122,25 @@ Five things the session produced, all landed:
 5. **The club mix recreated the forbidden Top 2 pair.** The mix now picks the
    winners-split that avoids barred pairs, and crowns let the organizer mark
    the pair that came up from another court (ADR-0013 amendment)
+
+# From the second court session
+
+1. **A finished score locked the organizer out.** The mix screen offered only
+   START SET 2 and the complete screen only NEW MATCH, so a point that should
+   not have counted could be taken back only by holding a remote. Summary,
+   club mix, club standings and complete now all carry BACK - UNDO LAST POINT
+   (ADR-0022). Still open: once START SET 2 archives set 1's journal, BACK
+   cannot reach back into set 1
+2. **DONE on the standings screen was vague.** It closes the round and drops
+   the Top 2 / Bottom 2 rotation, which "DONE" did not say next to a green NEW
+   ROUND that keeps it. Now a red LEAVE CLUB PLAY
+3. **No way to add a player that reached the hardware.** The names were a
+   `kSeedNames` array only read when the roster store was empty, so editing it
+   changed nothing on a unit that had already booted. The club list is now
+   `config/players.txt`, embedded in the firmware and read from source by the
+   sim (ADR-0023); Ian, John, Marcelo, Sarah and Sonny are in it. Still open:
+   the court unit needs a reflash to pick up an edit, and two units do not
+   reconcile players added courtside
 
 # In progress
 

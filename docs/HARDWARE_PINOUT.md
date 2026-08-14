@@ -68,10 +68,34 @@ Battery voltage is read from expander register `0x06` (10-bit LE). Millivolts:
 
 `mv = raw * 9900 / 1023` (3.3 V reference × 3:1 divider).
 
+One read is not a battery level. The divider puts a 3.0–4.2 V cell inside
+~124 of the 1023 counts, so a count is ~9.7 mV, which is already ~1.2 SoC
+points on the steep part of the curve; the reading is also taken under load
+while the curve describes open circuit, and the backlight boost, panel
+refresh and radio bursts all sag the rail. Unfiltered, the displayed percent
+jumped by tens of points between reads. So `read_battery_mv()` returns the
+**median of a 9-read burst** (~2 ms apart, since each expander read already
+waits a beat), and `padel::battery::BatteryMonitor` then rejects samples more
+than 300 mV from its running estimate, averages the rest at 1/8 weight, and
+lets the displayed percent move at most one point per 5 s sample.
+
 SoC is a piecewise OCV curve in `padel/common/battery.hpp`; estimated runtime
 uses rated capacity × SoC / an assumed ~475 mA cell draw (from the board’s
 5 V / 350 mA figure through boost). Readings below ~2.5 V are treated as
-no cell / unknown.
+no cell / unknown, and a failed read holds the last value for ~30 s rather
+than blanking the label.
+
+Diagnostics shows the smoothed voltage plus the raw burst spread
+(`median mV (min-max, n)`) and a bad-read count, which is how to measure the
+real rail noise on hardware. The court log carries the same line every sample
+at INFO (the build caps logging at INFO, so debug level would be compiled
+out) and warns whenever a sample is held.
+
+Measured on USB at ~4.08 V, the spread inside a burst is only 1–2 ADC counts
+(~10–20 mV) and no reads fail: quiet, and the filter turns the dither between
+two adjacent counts into a smooth value. The large swings that motivated the
+filter show up on battery under boost load, not here, so a quiet USB capture
+is not evidence the symptom is gone.
 
 ### Project peripherals (chosen by us, `menuconfig` -> "Padel Court")
 
